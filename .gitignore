@@ -1,0 +1,48 @@
+# ==========================================
+# 1. EcoFlow Dynamic Workspaces
+# ==========================================
+# Ignore all heavy video frames, chunks, and JSON checkpoints
+workspace/jobs/*
+workspace/inbox/*
+
+# Keep the directory structure intact for new clones
+!workspace/jobs/.gitkeep
+!workspace/inbox/.gitkeep
+
+# ==========================================
+# 2. Python Environment & Caches
+# ==========================================
+# Never commit the virtual environment (it relies on absolute OS paths)
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# ==========================================
+# 3. AI Models (Too large for standard Git)
+# ==========================================
+# Ignore heavy weights. Commit only the registry config.
+models/*.onnx
+models/*.task
+models/*.pt
+models/*.bin
+!models/registry.json
+
+# ==========================================
+# 4. Wails / Go / Frontend Build Artifacts
+# ==========================================
+build/bin/
+build/obj/
+frontend/dist/
+frontend/node_modules/
+*.exe
+
+# ==========================================
+# 5. OS & IDE Files
+# ==========================================
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

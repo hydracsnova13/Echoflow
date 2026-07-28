@@ -1,0 +1,12 @@
+{
+    "YunetFaceDetector_2023": {
+        "model_path": "models/face_detection_yunet_2023mar.onnx",
+        "framework": "onnx",
+        "estimated_ram_mb": 450.0
+    },
+    "GoogleFacialLandmarker": {
+        "model_path": "models/face_landmarker.task",
+        "framework": "mediapipe",
+        "estimated_ram_mb": 600.0
+    }
+}

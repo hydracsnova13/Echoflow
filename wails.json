@@ -1,0 +1,9 @@
+{
+    "name": "ecoflow",
+    "outputfilename": "EcoFlow.exe",
+    "frontend:dir": "frontend",
+    "frontend:build": "",
+    "frontend:dev": "",
+    "wailsjsdir": "./frontend/src",
+    "version": "2.9.1"
+}

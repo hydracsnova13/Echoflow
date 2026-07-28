@@ -1,0 +1,85 @@
+{
+    "MetadataProfiler": {
+        "domain": "cpu",
+        "execution_mode": "sequential",
+        "depends_on": [],
+        "script": "pipeline/profiler.py",
+        "accepted_inputs": [
+            ".3g2",
+            ".3gp",
+            ".avi",
+            ".asf",
+            ".f4v",
+            ".flv",
+            ".m2ts",
+            ".m2v",
+            ".m4v",
+            ".mkv",
+            ".mov",
+            ".mp4",
+            ".mpg",
+            ".mpeg",
+            ".mts",
+            ".mxf",
+            ".ogv",
+            ".rm",
+            ".rmvb",
+            ".ts",
+            ".vob",
+            ".webm",
+            ".wmv"
+        ],
+        "produces": "directory"
+    },
+    "FrameExtractor": {
+        "domain": "cpu",
+        "execution_mode": "sequential",
+        "depends_on": [
+            "MetadataProfiler"
+        ],
+        "script": "pipeline/video/generator_preprocessor/frame_extractor.py",
+        "accepted_inputs": [
+            "directory"
+        ],
+        "produces": "directory"
+    },
+    "FaceDetector": {
+        "domain": "ram",
+        "execution_mode": "chunked",
+        "depends_on": [
+            "FrameExtractor"
+        ],
+        "model_ref": "YunetFaceDetector_2023",
+        "script": "pipeline/video/generator_preprocessor/face_detector.py",
+        "accepted_inputs": [
+            "directory"
+        ],
+        "produces": ".json"
+    },
+    "FacialLandmarker": {
+        "domain": "ram",
+        "execution_mode": "chunked",
+        "depends_on": [
+            "FaceDetector"
+        ],
+        "model_ref": "GoogleFacialLandmarker",
+        "script": "pipeline/video/generator_preprocessor/landmarker.py",
+        "accepted_inputs": [
+            ".json",
+            "directory"
+        ],
+        "produces": ".json"
+    },
+    "MouthIsolator": {
+        "domain": "cpu",
+        "execution_mode": "chunked",
+        "depends_on": [
+            "FacialLandmarker"
+        ],
+        "script": "pipeline/video/generator_preprocessor/mouth_isolator.py",
+        "accepted_inputs": [
+            ".json"
+        ],
+        "produces": "directory"
+    }
+}

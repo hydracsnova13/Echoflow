@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EcoFlow DAG Governor</title>
+    <style>
+        :root { --bg-main: #020617; --bg-card: #0f172a; --border: #1e293b; --accent: #38bdf8; --success: #10b981; --warning: #f59e0b; --danger: #f43f5e; --standby: #34d399; --text-main: #f8fafc; --text-muted: #94a3b8; }
+        body { background-color: var(--bg-main); color: var(--text-main); font-family: 'Inter', system-ui, sans-serif; margin: 0; padding: 20px; transition: all 0.3s ease;}
+        .container { max-width: 1400px; margin: 0 auto; }
+        .header { border-bottom: 1px solid var(--border); padding-bottom: 15px; margin-bottom: 25px; display: flex; justify-content: space-between; align-items: center;}
+        h1 { margin: 0; font-size: 1.5rem; display: flex; align-items: center; gap: 10px; font-weight: 600;}
+        h1 span { color: var(--accent); font-weight: 800;}
+        .toggle-container { display: flex; align-items: center; gap: 12px; font-size: 0.85rem; font-weight: 600; background: var(--bg-card); padding: 6px 12px; border-radius: 6px; border: 1px solid var(--border);}
+        .switch { position: relative; display: inline-block; width: 40px; height: 20px; }
+        .switch input { opacity: 0; width: 0; height: 0; }
+        .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: var(--success); transition: .3s; border-radius: 20px; }
+        .slider:before { position: absolute; content: ""; height: 14px; width: 14px; left: 3px; bottom: 3px; background-color: white; transition: .3s; border-radius: 50%; }
+        input:checked + .slider { background-color: var(--accent); }
+        input:checked + .slider:before { transform: translateX(20px); }
+        .card { background: var(--bg-card); padding: 20px; border-radius: 12px; margin-bottom: 20px; border: 1px solid var(--border); box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); }
+        .card-header { font-size: 0.9rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); font-weight: 700; margin-bottom: 15px; display: flex; justify-content: space-between;}
+        .execute-bar { display: flex; gap: 10px; }
+        input[type="text"] { flex-grow: 1; padding: 12px 16px; background: var(--bg-main); border: 1px solid var(--border); color: white; border-radius: 8px; font-family: monospace; font-size: 0.9rem;}
+        input[type="text"]:focus { outline: none; border-color: var(--accent); }
+        button { padding: 12px 28px; background: var(--accent); color: #020617; border: none; border-radius: 8px; cursor: pointer; font-weight: 700; transition: all 0.2s; }
+        button:hover { background: #0ea5e9; }
+        button:disabled { background: var(--border); color: var(--text-muted); cursor: not-allowed; }
+        .dag-container { display: flex; align-items: flex-start; justify-content: space-between; margin-top: 10px; padding-bottom: 15px; overflow-x: auto;}
+        .sys-node { background: #1e293b; border: 1px dashed var(--text-muted); border-radius: 8px; padding: 10px 15px; font-weight: bold; color: var(--text-muted); display: flex; align-items: center; gap: 8px; flex-shrink: 0; height: fit-content; margin-top: 25px;}
+        .sys-node.active { border: 1px solid var(--success); color: var(--success); background: rgba(16, 185, 129, 0.1); box-shadow: 0 0 10px rgba(16, 185, 129, 0.2);}
+        .dag-node { background: var(--bg-main); border: 2px solid var(--border); border-radius: 10px; padding: 15px; width: 230px; flex-shrink: 0; position: relative; transition: all 0.3s ease;}
+        .dag-node.active { border-color: var(--accent); box-shadow: 0 0 15px rgba(56, 189, 248, 0.3); } 
+        .dag-node.standby { border-color: var(--standby); box-shadow: 0 0 8px rgba(52, 211, 153, 0.1); } 
+        .dag-node.bottleneck { border-color: var(--warning); box-shadow: 0 0 15px rgba(245, 158, 11, 0.2); } 
+        .dag-node.done { border-color: var(--border); opacity: 0.7;} 
+        .node-header { font-weight: 700; font-size: 0.95rem; margin-bottom: 12px; display: flex; align-items: center; gap: 8px;}
+        .node-status-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--border); }
+        .active .node-status-dot { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+        .standby .node-status-dot { background: var(--standby); }
+        .bottleneck .node-status-dot { background: var(--warning); animation: pulse 1s infinite; }
+        .done .node-status-dot { background: var(--success); }
+        .node-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 0.8rem; color: var(--text-muted); margin-bottom: 10px;}
+        .metric-box { background: var(--bg-card); padding: 8px; border-radius: 6px; border: 1px solid var(--border); display: flex; flex-direction: column; gap: 4px;}
+        .metric-val { font-family: monospace; font-size: 1rem; color: var(--text-main); font-weight: bold;}
+        .cpu-badge { grid-column: span 2; text-align: center; background: #1e293b; padding: 6px; border-radius: 6px; font-size: 0.75rem; letter-spacing: 0.05em;}
+        .dag-edge { color: var(--border); font-size: 1.5rem; font-weight: bold; padding: 0 5px; transition: color 0.3s; margin-top: 25px;}
+        .dag-edge.active { color: var(--accent); }
+        .telemetry-grid { display: grid; grid-template-columns: 1fr 2fr; gap: 20px; }
+        .bar-container { background: var(--bg-main); height: 28px; border-radius: 6px; overflow: hidden; position: relative; border: 1px solid var(--border);}
+        .bar-fill { background: linear-gradient(90deg, #0284c7, #38bdf8); height: 100%; width: 0%; transition: width 0.3s linear; }
+        .bar-text { position: absolute; top: 5px; left: 12px; font-family: monospace; font-size: 0.85rem; text-shadow: 1px 1px 2px rgba(0,0,0,0.9); }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { text-align: left; padding: 12px; border-bottom: 1px solid var(--border); font-size: 0.85rem;}
+        th { color: var(--text-muted); font-weight: 600; text-transform: uppercase; font-size: 0.75rem;}
+        .status-active { color: var(--accent); font-weight: bold; background: rgba(56, 189, 248, 0.1); padding: 4px 8px; border-radius: 4px;}
+        .status-idle { color: var(--standby); font-weight: bold; background: rgba(52, 211, 153, 0.1); padding: 4px 8px; border-radius: 4px;}
+        .logs { background: var(--bg-main); padding: 15px; height: 350px; overflow-y: auto; border-radius: 8px; font-size: 0.8rem; color: var(--text-muted); line-height: 1.6; font-family: monospace; border: 1px solid var(--border);}
+        .log-success { color: var(--success); }
+        .log-error { color: var(--danger); }
+        .zen-view { display: none; text-align: center; padding: 80px 20px; background: var(--bg-card); border-radius: 12px; border: 1px solid var(--border); margin-top: 20px;}
+        .zen-status { font-size: 2rem; font-weight: 700; color: var(--text-main); margin-bottom: 15px;}
+        .zen-spinner { display: none; width: 50px; height: 50px; border: 4px solid var(--border); border-radius: 50%; border-top-color: var(--accent); animation: spin 1s infinite; margin: 0 auto 25px auto;}
+        .zen-done { color: var(--success); font-size: 4rem; margin-bottom: 20px; display: none;}
+        .zen-subtitle { color: var(--text-muted); font-size: 1.1rem; max-width: 600px; margin: 0 auto; line-height: 1.5;}
+        @keyframes spin { to { transform: rotate(360deg); } }
+        body.operator-mode .tech-view { display: none; }
+        body.operator-mode .zen-view { display: block; }
+    </style>
+</head>
+<body class="audit-mode" id="appBody">
+    <div class="container">
+        <div class="header">
+            <h1><span>EcoFlow</span> DAG Governor</h1>
+            <div class="toggle-container">
+                <span style="color: var(--success);">Operator</span>
+                <label class="switch">
+                    <input type="checkbox" id="modeSwitch" checked onchange="toggleMode()">
+                    <span class="slider"></span>
+                </label>
+                <span style="color: var(--accent);">Architect</span>
+            </div>
+        </div>
+        <div class="card">
+            <div class="card-header">Job Injection Gateway</div>
+            <div class="execute-bar">
+                <input type="text" id="targetPath" placeholder="Provide absolute file path (e.g., D:\projects\test.mp4)">
+                <button id="injectBtn" onclick="submitJob()">Execute Pipeline</button>
+            </div>
+        </div>
+        <div class="zen-view" id="zenView">
+            <div class="zen-done" id="zenDone">✓</div>
+            <div class="zen-spinner" id="zenSpinner"></div>
+            <div class="zen-status" id="zenStatus">System Awaiting Input</div>
+            <div class="zen-subtitle" id="zenSubtitle">Submit a media path above.</div>
+        </div>
+        <div class="tech-view">
+            <div class="telemetry-grid">
+                <div class="card">
+                    <div class="card-header">Global Orchestrator KPIs</div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-top: 10px;">
+                        <div><div style="color: var(--text-muted); font-size: 0.75rem;">COMPLETED JOBS</div>
+                        <div style="font-size: 1.8rem; font-weight: bold; font-family: monospace;" id="globalCompleted">0</div></div>
+                        <div><div style="color: var(--text-muted); font-size: 0.75rem;">RESIDENT DAEMONS</div>
+                        <div style="font-size: 1.8rem; font-weight: bold; font-family: monospace;" id="globalDaemons">0</div></div>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-header">Physical Hardware Telemetry (OS RAM Allocation)</div>
+                    <div class="bar-container" style="margin-top: 25px;">
+                        <div class="bar-fill" id="ramBar"></div>
+                        <div class="bar-text" id="ramText">0.0 / 5000 MB (0.0%)</div>
+                    </div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-header">Component-Level Pipeline DAG</div>
+                <div class="dag-container">
+                    <div class="sys-node" id="node-START">🟢 INGEST</div>
+                    <div class="dag-edge" id="edge-0">➔</div>
+                    <div class="dag-node" id="node-MetadataProfiler">
+                        <div class="node-header"><div class="node-status-dot"></div> MetadataProfiler</div>
+                        <div class="node-metrics"><div class="cpu-badge">CPU SEQUENTIAL TASK</div></div>
+                    </div>
+                    <div class="dag-edge" id="edge-1">➔</div>
+                    <div class="dag-node" id="node-FrameExtractor">
+                        <div class="node-header"><div class="node-status-dot"></div> FrameExtractor</div>
+                        <div class="node-metrics"><div class="cpu-badge">CPU SEQUENTIAL TASK</div></div>
+                    </div>
+                    <div class="dag-edge" id="edge-2">➔</div>
+                    <div class="dag-node" id="node-FaceDetector">
+                        <div class="node-header"><div class="node-status-dot"></div> FaceDetector</div>
+                        <div class="node-metrics">
+                            <div class="metric-box"><span>Backlog</span><span class="metric-val" id="q-FaceDetector">0</span></div>
+                            <div class="metric-box"><span>Threads</span><span class="metric-val" id="d-FaceDetector">0</span></div>
+                            <div class="metric-box" style="grid-column: span 2;"><span>RAM Footprint</span><span class="metric-val" id="r-FaceDetector">0.0 MB</span></div>
+                        </div>
+                        <div id="prog-FaceDetector"></div>
+                    </div>
+                    <div class="dag-edge" id="edge-3">➔</div>
+                    <div class="dag-node" id="node-FacialLandmarker">
+                        <div class="node-header"><div class="node-status-dot"></div> FacialLandmarker</div>
+                        <div class="node-metrics">
+                            <div class="metric-box"><span>Backlog</span><span class="metric-val" id="q-FacialLandmarker">0</span></div>
+                            <div class="metric-box"><span>Threads</span><span class="metric-val" id="d-FacialLandmarker">0</span></div>
+                            <div class="metric-box" style="grid-column: span 2;"><span>RAM Footprint</span><span class="metric-val" id="r-FacialLandmarker">0.0 MB</span></div>
+                        </div>
+                        <div id="prog-FacialLandmarker"></div>
+                    </div>
+                    <div class="dag-edge" id="edge-4">➔</div>
+                    <div class="dag-node" id="node-MouthIsolator">
+                        <div class="node-header"><div class="node-status-dot"></div> MouthIsolator</div>
+                        <div class="node-metrics">
+                            <div class="metric-box"><span>Backlog</span><span class="metric-val" id="q-MouthIsolator">0</span></div>
+                            <div class="metric-box"><span>Threads</span><span class="metric-val" id="d-MouthIsolator">0</span></div>
+                            <div class="metric-box" style="grid-column: span 2;"><span>RAM Footprint</span><span class="metric-val" id="r-MouthIsolator">0.0 MB</span></div>
+                        </div>
+                        <div id="prog-MouthIsolator"></div>
+                    </div>
+                    <div class="dag-edge" id="edge-5">➔</div>
+                    <div class="sys-node" id="node-END">🏁 OUTPUT</div>
+                </div>
+            </div>
+            <div class="telemetry-grid">
+                <div class="card">
+                    <div class="card-header">Model Garden Resident Daemons</div>
+                    <table id="processTable">
+                        <tr><th style='width: 10%'>PID</th><th style='width: 25%'>Model/Component</th><th style='width: 15%'>RAM</th><th style='width: 50%'>Activity</th></tr>
+                    </table>
+                </div>
+                <div class="card">
+                    <div class="card-header">System Interceptor Logs</div>
+                    <div class="logs" id="logBox"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/wails/ipc.js"></script>
+
+    <script>
+        function toggleMode() {
+            const body = document.getElementById('appBody');
+            body.className = document.getElementById('modeSwitch').checked ? 'audit-mode' : 'operator-mode';
+        }
+
+        function submitJob() {
+            const path = document.getElementById("targetPath").value.trim();
+            if (!path) return;
+            const btn = document.getElementById("injectBtn");
+            btn.disabled = true;
+            btn.innerText = "Executing...";
+
+            document.getElementById("zenStatus").innerText = "Analyzing Media Architecture...";
+            document.getElementById("zenStatus").style.color = "var(--accent)";
+            document.getElementById("zenSpinner").style.display = "inline-block";
+            document.getElementById("zenDone").style.display = "none";
+            document.getElementById("node-START").classList.add("active");
+            document.getElementById("node-END").classList.remove("active", "done");
+
+            window.go.main.App.SubmitJob(path).then(() => {
+                document.getElementById("targetPath").value = "";
+            }).catch(err => {
+                alert("Error injecting job: " + err);
+            });
+        }
+
+        window.runtime.EventsOn("telemetry_update", function(data) {
+            const pct = data.max_ram > 0 ? (data.current_ram / data.max_ram) * 100 : 0;
+            document.getElementById("ramBar").style.width = pct + "%";
+            document.getElementById("ramText").innerText = data.current_ram.toFixed(1) + " / " + data.max_ram.toFixed(0) + " MB (" + pct.toFixed(1) + "%)";
+            document.getElementById("globalCompleted").innerText = data.completed;
+            
+            let totalDaemons = data.worker_stats ? data.worker_stats.length : 0;
+            document.getElementById("globalDaemons").innerText = totalDaemons;
+
+            let logHtml = "";
+            data.alerts.forEach(log => {
+                let colorClass = log.includes("✅") ? "log-success" : log.includes("❌") ? "log-error" : log.includes("🛑") || log.includes("🧹") ? "log-warn" : "";
+                logHtml += '<div class="' + colorClass + '">' + log + '</div>';
+            });
+            document.getElementById("logBox").innerHTML = logHtml;
+
+            // 🛡️ THE FIX: Smart DAG Node Highlighting
+            ['MetadataProfiler', 'FrameExtractor', 'FaceDetector', 'FacialLandmarker', 'MouthIsolator'].forEach((comp, idx) => {
+                let node = document.getElementById('node-' + comp);
+                let edge = document.getElementById('edge-' + (idx + 1));
+                if(!node) return;
+
+                let isActive = false;
+                let isDone = false;
+
+                if (data.global_tasks) {
+                    if (comp === 'MetadataProfiler' || comp === 'FrameExtractor') {
+                        isActive = data.global_tasks[comp] === 'RUNNING';
+                        isDone = data.global_tasks[comp] === 'DONE';
+                    } else {
+                        // For chunked tasks, check if there's active backlog or workers
+                        let workers = data.worker_stats ? data.worker_stats.filter(w => (w.Component || w.component) === comp) : [];
+                        let activeCount = workers.filter(w => w.IsActive || w.Status === 'ACTIVE').length;
+                        let q = data.queue_backlogs ? (data.queue_backlogs[comp] || 0) : 0;
+                        
+                        isActive = (activeCount > 0 || q > 0);
+                        // Mark as done if the pipeline is globally completed
+                        isDone = data.job_complete; 
+                    }
+                }
+
+                if (isActive) {
+                    node.className = 'dag-node active';
+                    if(edge) edge.className = 'dag-edge active';
+                } else if (isDone) {
+                    node.className = 'dag-node done';
+                    if(edge) edge.className = 'dag-edge active';
+                } else {
+                    node.className = 'dag-node';
+                    if(edge) edge.className = 'dag-edge';
+                }
+            });
+
+            const ramComps = ["FaceDetector", "FacialLandmarker", "MouthIsolator"];
+            ramComps.forEach((comp) => {
+                let q = data.queue_backlogs ? (data.queue_backlogs[comp] || 0) : 0;
+                let workers = data.worker_stats ? data.worker_stats.filter(w => (w.Component || w.component) === comp) : [];
+                let activeCount = workers.length;
+
+                let ram = workers.reduce((sum, w) => {
+                    let ramKey = Object.keys(w).find(k => k.toLowerCase().includes('ram'));
+                    let val = ramKey ? parseFloat(w[ramKey]) : 0;
+                    return sum + (isNaN(val) ? 0 : val);
+                }, 0);
+
+                document.getElementById('q-' + comp).innerText = q;
+                document.getElementById('d-' + comp).innerText = activeCount;
+                document.getElementById('r-' + comp).innerText = ram.toFixed(1) + " MB";
+
+                let compChunks = (data.chunk_progress && data.chunk_progress[comp]) ? data.chunk_progress[comp] : {};
+                let chunkEntries = Object.entries(compChunks);
+
+                let progressHtml = "";
+                chunkEntries.forEach(([chunk, pct]) => {
+                    let barColor = pct === 100 ? "var(--success)" : "var(--accent)";
+                    progressHtml += '<div style="margin-top: 10px; padding-top: 6px; border-top: 1px solid var(--border);">' +
+                        '<div style="display:flex; justify-content:space-between; color: ' + barColor + '; font-family: monospace; font-weight: bold; font-size: 0.75rem;">' +
+                        '<span>' + chunk.replace("bucket_", "B_") + '</span><span>' + pct + '%</span>' +
+                        '</div>' +
+                        '<div style="background: var(--bg-main); height: 5px; border-radius: 2px; margin-top: 4px; border: 1px solid var(--border); overflow: hidden;">' +
+                        '<div style="background: ' + barColor + '; height: 100%; width: ' + pct + '%; transition: width 0.3s linear;"></div>' +
+                        '</div></div>';
+                });
+                let progContainer = document.getElementById('prog-' + comp);
+                if (progContainer) { progContainer.innerHTML = progressHtml; }
+            });
+
+            let pHtml = "<tr><th style='width: 10%'>PID</th><th style='width: 25%'>Model/Component</th><th style='width: 15%'>RAM Footprint</th><th style='width: 50%'>Activity</th></tr>";
+            if (data.worker_stats && data.worker_stats.length > 0) {
+                data.worker_stats.forEach(w => {
+                    let pid = w.PID || w.pid || "N/A";
+                    let comp = w.Component || w.component || "Unknown";
+                    let ramKey = Object.keys(w).find(k => k.toLowerCase().includes('ram'));
+                    let ram = ramKey ? parseFloat(w[ramKey]) : 0;
+                    if (isNaN(ram)) ram = 0;
+                    
+                    let stat = (w.Status || w.status || "").toUpperCase();
+                    let isActive = stat === "ACTIVE" || w.IsActive === true;
+                    
+                    let chunk = w.CurrentChunk || w.current_chunk || "";
+                    let pct = w.ProgressPct || w.progress_pct || 0;
+                    
+                    let activityHtml = "";
+                    if (isActive && chunk !== "") {
+                        activityHtml = '<div style="display: flex; flex-direction: column; gap: 4px; padding-top: 2px;">' +
+                            '<div style="display: flex; justify-content: space-between; font-size: 0.75rem; font-family: monospace; font-weight: bold;">' +
+                            '<span style="color: var(--accent);">' + chunk + '</span>' +
+                            '<span style="color: var(--text-muted);">' + pct + '%</span>' +
+                            '</div>' +
+                            '<div style="background: var(--bg-main); height: 6px; border-radius: 4px; overflow: hidden; border: 1px solid var(--border);">' +
+                            '<div style="background: var(--accent); height: 100%; width: ' + pct + '%; transition: width 0.3s linear;"></div>' +
+                            '</div></div>';
+                    } else {
+                        activityHtml = '<span class="status-idle">Warm Standby (Idle)</span>';
+                    }
+                    pHtml += "<tr><td>" + pid + "</td><td>" + comp + "</td><td style='font-family: monospace;'>" + ram.toFixed(1) + " MB</td><td>" + activityHtml + "</td></tr>";
+                });
+            } else {
+                pHtml += "<tr><td colspan='4' style='text-align:center; color:var(--text-muted);'>No models resident in memory.</td></tr>";
+            }
+            document.getElementById("processTable").innerHTML = pHtml;
+
+            if (data.job_complete) {
+                document.getElementById("node-START").className = "sys-node done";
+                document.getElementById("node-END").className = "sys-node active";
+                document.getElementById("zenStatus").innerText = "Pipeline Execution Complete";
+                document.getElementById("zenStatus").style.color = "var(--success)";
+                document.getElementById("zenSpinner").style.display = "none";
+                document.getElementById("zenDone").style.display = "block";
+                
+                let btn = document.getElementById("injectBtn");
+                btn.disabled = false;
+                btn.innerText = "Execute Pipeline";
+            }
+        });
+    </script>
+</body>
+</html>
