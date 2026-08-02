@@ -81,5 +81,42 @@
             ".json"
         ],
         "produces": "directory"
+    },
+    "AudioChunker": {
+        "domain": "cpu",
+        "execution_mode": "sequential",
+        "depends_on": [
+            "MetadataProfiler"
+        ],
+        "script": "pipeline/audio/audio_chunker.py",
+        "accepted_inputs": [
+            "directory"
+        ],
+        "produces": "directory"
+    },
+    "WhisperTranscriber": {
+        "domain": "ram",
+        "execution_mode": "chunked",
+        "depends_on": [
+            "AudioChunker"
+        ],
+        "model_ref": "WhisperSmallDaemon",
+        "script": "pipeline/audio/whisper_transcriber.py",
+        "accepted_inputs": [
+            "directory"
+        ],
+        "produces": ".json"
+    },
+    "TranscriptAggregator": {
+        "domain": "cpu",
+        "execution_mode": "sequential",
+        "depends_on": [
+            "WhisperTranscriber"
+        ],
+        "script": "pipeline/audio/transcript_aggregator.py",
+        "accepted_inputs": [
+            "directory"
+        ],
+        "produces": ".json"
     }
 }

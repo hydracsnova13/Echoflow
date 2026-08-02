@@ -464,8 +464,6 @@ func (m *MemoryManager) PruneExcessWorkers() {
 
 	idleCounts := make(map[string]int)
 	var retainedWorkers []*WarmWorker
-
-	// 🛡️ THE FIX: Accumulate logs safely instead of calling LogToUI while memory is locked
 	var logsToEmit []string
 
 	for _, w := range m.ActiveWorkers {
@@ -495,8 +493,6 @@ func (m *MemoryManager) PruneExcessWorkers() {
 		}
 	}
 	m.ActiveWorkers = retainedWorkers
-
-	// 🛡️ THE FIX: Unlock memory BEFORE sending the logs to the UI
 	m.mu.Unlock()
 
 	for _, msg := range logsToEmit {
@@ -580,34 +576,4 @@ func (m *MemoryManager) StartTelemetryEmitter(ctx context.Context) {
 			runtime.EventsEmit(m.ctx, "telemetry_update", snap)
 		}
 	}
-}
-
-func (m *MemoryManager) InjectJob(targetPath string) error {
-	targetPath = strings.Trim(strings.TrimSpace(targetPath), "\"'")
-	m.LogToUI(fmt.Sprintf("📥 Initiating Injection: %s", targetPath))
-
-	src, err := os.Open(targetPath)
-	if err != nil {
-		m.LogToUI(fmt.Sprintf("⚠️ Failed to open target file: %v", err))
-		return err
-	}
-	defer src.Close()
-
-	fileName := filepath.Base(targetPath)
-	inboxDir := filepath.Join(m.ProjectRoot, "workspace", "inbox")
-	os.MkdirAll(inboxDir, 0755)
-
-	tmpPath := filepath.Join(inboxDir, fileName+".tmp")
-	finalPath := filepath.Join(inboxDir, fileName)
-
-	dst, err := os.Create(tmpPath)
-	if err != nil {
-		return err
-	}
-	io.Copy(dst, src)
-	dst.Close()
-
-	os.Rename(tmpPath, finalPath)
-	m.LogToUI(fmt.Sprintf("✅ Dropped %s into Inbox!", fileName))
-	return nil
 }

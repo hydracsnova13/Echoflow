@@ -33,8 +33,8 @@ type JobManifest struct {
 	JobID       string                    `json:"job_id"`
 	Status      JobStatus                 `json:"status"`
 	SourceFile  string                    `json:"source_file"`
-	GlobalTasks map[string]ExecutionState `json:"global_tasks"` // For Sequential CPU tasks
-	Chunks      map[string]*ChunkState    `json:"chunks"`       // For Chunked CPU/RAM tasks
+	GlobalTasks map[string]ExecutionState `json:"global_tasks"`
+	Chunks      map[string]*ChunkState    `json:"chunks"`
 	Mu          sync.Mutex                `json:"-"`
 	manifestDir string                    `json:"-"`
 }
@@ -115,9 +115,6 @@ func (jm *JobManifest) SetStatus(status JobStatus) {
 	jm.Save()
 }
 
-// GetStaleQueuedChunks returns chunk/component pairs that are stuck in QUEUED state.
-// These are tasks that were pushed to the pending queue but may have been lost
-// (e.g., worker was pruned before processing, or queue was drained without execution).
 type StaleChunk struct {
 	ChunkID   string
 	Component string

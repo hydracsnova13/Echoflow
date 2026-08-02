@@ -1,4 +1,4 @@
-import sys, cv2, os, json, psutil, gc
+import sys, cv2, os, json, psutil, gc, threading, queue
 
 os.environ["OMP_NUM_THREADS"] = "1"
 os.environ["TF_NUM_INTRAOP_THREADS"] = "1"
@@ -13,17 +13,29 @@ MOUTH_INDICES = [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 409, 270, 26
 def send_ipc(data):
     print(f"ECOFLOW_IPC__{json.dumps(data)}", flush=True)
 
+def reader_thread(q):
+    for line in iter(sys.stdin.readline, ''):
+        q.put(line)
+    q.put(None)
+
 def boot_daemon():
     process = psutil.Process(os.getpid())
     send_ipc({"status": "ready", "actual_ram_mb": process.memory_info().rss / (1024 * 1024)})
 
-    while True:
-        line = sys.stdin.readline()
-        if not line: break
-        line = line.strip()
-        if not line: continue
+    input_queue = queue.Queue()
+    t = threading.Thread(target=reader_thread, args=(input_queue,))
+    t.daemon = True
+    t.start()
 
+    IDLE_TIMEOUT_SECONDS = 60
+
+    while True:
         try:
+            line = input_queue.get(timeout=IDLE_TIMEOUT_SECONDS)
+            if line is None: break
+            line = line.strip()
+            if not line: continue
+
             req = json.loads(line)
             input_target = req.get("input")
             chunk_name = os.path.basename(input_target)
@@ -63,12 +75,16 @@ def boot_daemon():
                 except Exception:
                     pass
 
-                # 🛡️ THE FIX: Ensure the loop ALWAYS safely hits the IPC emit
                 if (idx + 1) % 15 == 0 or (idx + 1) == total:
                     send_ipc({"status": "progress", "chunk": chunk_name, "pct": int(((idx + 1) / total) * 100)})
 
             gc.collect()
             send_ipc({"status": "success", "chunk": input_target})
+
+        except queue.Empty:
+            send_ipc({"status": "warn", "message": f"🧹 MouthIsolator idle for {IDLE_TIMEOUT_SECONDS}s. Self-terminating to release RAM."})
+            break
+            
         except Exception as e:
             send_ipc({"status": "error", "error": str(e)})
 

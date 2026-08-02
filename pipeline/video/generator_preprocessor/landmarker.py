@@ -1,4 +1,4 @@
-import sys, cv2, mediapipe as mp, os, json, psutil, gc
+import sys, cv2, mediapipe as mp, os, json, psutil, gc, threading, queue
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
@@ -13,6 +13,11 @@ os.environ["OPENCV_LOG_LEVEL"] = "OFF"
 def send_ipc(data):
     print(f"ECOFLOW_IPC__{json.dumps(data)}", flush=True)
 
+def reader_thread(q):
+    for line in iter(sys.stdin.readline, ''):
+        q.put(line)
+    q.put(None)
+
 def boot_daemon():
     project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
     model_path = os.path.join(project_root, "models", "face_landmarker.task")
@@ -20,19 +25,25 @@ def boot_daemon():
     base_opts = python.BaseOptions(model_asset_path=model_path, delegate=python.BaseOptions.Delegate.CPU)
     options = vision.FaceLandmarkerOptions(base_options=base_opts, num_faces=10)
     
-    # 🛡️ THE FIX: C++ Graph instantiated cleanly outside the loop to bypass destructor deadlocks
     detector = vision.FaceLandmarker.create_from_options(options)
 
     process = psutil.Process(os.getpid())
     send_ipc({"status": "ready", "actual_ram_mb": process.memory_info().rss / (1024 * 1024)})
 
-    while True:
-        line = sys.stdin.readline()
-        if not line: break
-        line = line.strip()
-        if not line: continue
+    input_queue = queue.Queue()
+    t = threading.Thread(target=reader_thread, args=(input_queue,))
+    t.daemon = True
+    t.start()
 
+    IDLE_TIMEOUT_SECONDS = 60
+
+    while True:
         try:
+            line = input_queue.get(timeout=IDLE_TIMEOUT_SECONDS)
+            if line is None: break
+            line = line.strip()
+            if not line: continue
+
             req = json.loads(line)
             input_target = req.get("input")
             chunk_name = os.path.basename(input_target)
@@ -64,12 +75,16 @@ def boot_daemon():
                 except Exception:
                     pass
 
-                # 🛡️ THE FIX: Ensure progress logic is never accidentally skipped
                 if (idx + 1) % 15 == 0 or (idx + 1) == total:
                     send_ipc({"status": "progress", "chunk": chunk_name, "pct": int(((idx + 1) / total) * 100)})
 
             gc.collect() 
             send_ipc({"status": "success", "chunk": input_target})
+
+        except queue.Empty:
+            send_ipc({"status": "warn", "message": f"🧹 FacialLandmarker idle for {IDLE_TIMEOUT_SECONDS}s. Self-terminating to release RAM."})
+            break
+            
         except Exception as e:
             send_ipc({"status": "error", "error": str(e)})
 

@@ -28,6 +28,7 @@ models/*.onnx
 models/*.task
 models/*.pt
 models/*.bin
+models/whisper-small/
 !models/registry.json
 
 # ==========================================

@@ -52,6 +52,8 @@ func main() {
 		Title:  "EcoFlow DAG Governor",
 		Width:  1400,
 		Height: 900,
+		// 🛡️ THE FIX: Force the app to open maximized automatically
+		WindowStartState: options.Maximised,
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},
