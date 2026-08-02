@@ -1,13 +1,15 @@
 # ==========================================
 # 1. EcoFlow Dynamic Workspaces
 # ==========================================
-# Ignore all heavy video frames, chunks, and JSON checkpoints
+# Ignore all heavy video frames, chunks, JSON checkpoints, and SQLite caches
 workspace/jobs/*
 workspace/inbox/*
+workspace/cache/*
 
 # Keep the directory structure intact for new clones
 !workspace/jobs/.gitkeep
 !workspace/inbox/.gitkeep
+!workspace/cache/.gitkeep
 
 # ==========================================
 # 2. Python Environment & Caches
@@ -23,12 +25,13 @@ __pycache__/
 # ==========================================
 # 3. AI Models (Too large for standard Git)
 # ==========================================
-# Ignore heavy weights. Commit only the registry config.
+# Ignore heavy weights and HF snapshots. Commit only the registry config.
 models/*.onnx
 models/*.task
 models/*.pt
 models/*.bin
 models/whisper-small/
+models/nllb-200-distilled-600M/
 !models/registry.json
 
 # ==========================================

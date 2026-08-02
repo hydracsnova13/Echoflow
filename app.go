@@ -62,7 +62,6 @@ func (a *App) GetRecentCheckpoints() ([]JobSummary, error) {
 					status = s
 				}
 
-				// Dynamically calculate progress based on DONE vs Total states
 				total, done := 0, 0
 				if g, ok := state["global_tasks"].(map[string]interface{}); ok {
 					total += len(g)
@@ -107,12 +106,12 @@ func (a *App) GetRecentCheckpoints() ([]JobSummary, error) {
 	return jobs, nil
 }
 
-func (a *App) SubmitJob(targetPath string) (string, error) {
+// 🛡️ THE FIX: Added targetLang to the frontend-to-backend signature
+func (a *App) SubmitJob(targetPath string, targetLang string) (string, error) {
 	targetPath = strings.Trim(strings.TrimSpace(targetPath), "\"'")
 
-	// 🛡️ SERVER-SIDE SHIELD: Prevents users from accidentally injecting a JOB- ID
 	if strings.HasPrefix(targetPath, "JOB-") {
-		errMsg := fmt.Sprintf("⚠️ Invalid Input: '%s' is an existing checkpoint ID, not a media file path.", targetPath)
+		errMsg := fmt.Sprintf("⚠️ Invalid Input: '%s' is an existing checkpoint ID.", targetPath)
 		a.MM.LogToUI(errMsg)
 		return "", fmt.Errorf("Please provide a valid absolute file path (.mp4), not a JOB- ID")
 	}
@@ -128,6 +127,11 @@ func (a *App) SubmitJob(targetPath string) (string, error) {
 	jobID := fmt.Sprintf("JOB-%d", time.Now().Unix())
 	jobDir := filepath.Join(a.MM.ProjectRoot, "workspace", "jobs", jobID)
 	os.MkdirAll(jobDir, 0755)
+
+	// Save the selected language into the workspace so the NMT Daemon can read it mid-flight
+	configPath := filepath.Join(jobDir, "job_config.json")
+	configData := fmt.Sprintf(`{"target_language": "%s"}`, targetLang)
+	os.WriteFile(configPath, []byte(configData), 0644)
 
 	fileName := filepath.Base(targetPath)
 	destPath := filepath.Join(jobDir, fileName)
@@ -147,7 +151,7 @@ func (a *App) SubmitJob(targetPath string) (string, error) {
 	io.Copy(dst, src)
 
 	a.MM.Checkpoints.InitializeJob(jobID, destPath, filepath.Join(a.MM.ProjectRoot, "workspace"))
-	a.MM.LogToUI(fmt.Sprintf("✅ Job %s safely created and queued!", jobID))
+	a.MM.LogToUI(fmt.Sprintf("✅ Job %s safely created (Target Language: %s)!", jobID, targetLang))
 
 	go a.DAG.EvaluateJob(jobID)
 	return jobID, nil
@@ -157,12 +161,10 @@ func (a *App) GetPipelineManifest() map[string]broker.PipelineComponent {
 	return a.MM.PipelineDAG
 }
 
-// StopJob routes through CheckpointManager with Cold-Boot Recovery
 func (a *App) StopJob(jobID string) error {
 	a.MM.LogToUI(fmt.Sprintf("🛑 Stopping Job: %s...", jobID))
 	job := a.MM.Checkpoints.GetJob(jobID)
 
-	// 🛡️ COLD-BOOT RECOVERY: Re-hydrate job from disk if missing from RAM
 	if job == nil {
 		manifestPath := filepath.Join(a.MM.ProjectRoot, "workspace", "jobs", jobID, "manifest.json")
 		if _, err := os.Stat(manifestPath); err == nil {
@@ -177,12 +179,10 @@ func (a *App) StopJob(jobID string) error {
 	return nil
 }
 
-// ResumeJob routes through CheckpointManager with Cold-Boot Recovery and Auto-Clears transient errors
 func (a *App) ResumeJob(jobID string) error {
 	a.MM.LogToUI(fmt.Sprintf("▶️ Resuming Job: %s...", jobID))
 	job := a.MM.Checkpoints.GetJob(jobID)
 
-	// 🛡️ COLD-BOOT RECOVERY: Re-hydrate job from disk if missing from RAM
 	if job == nil {
 		manifestPath := filepath.Join(a.MM.ProjectRoot, "workspace", "jobs", jobID, "manifest.json")
 		if _, err := os.Stat(manifestPath); err == nil {
@@ -192,7 +192,6 @@ func (a *App) ResumeJob(jobID string) error {
 		}
 	}
 
-	// 🛡️ ERROR RECOVERY: Transforms the "Resume" button into a "Retry/Recover" mechanism
 	job.Mu.Lock()
 	for k, v := range job.GlobalTasks {
 		if v == broker.StateError {
@@ -209,9 +208,9 @@ func (a *App) ResumeJob(jobID string) error {
 	job.Status = broker.JobRunning
 	job.Mu.Unlock()
 
-	job.Save() // Persist recovery state to manifest.json
+	job.Save()
 
-	time.Sleep(1 * time.Second) // Let runtime garbage collect old threads
+	time.Sleep(1 * time.Second)
 
 	go a.DAG.EvaluateJob(jobID)
 	a.MM.LogToUI(fmt.Sprintf("✅ Job %s resumed. Retrying failed tasks and re-queuing.", jobID))

@@ -30,6 +30,23 @@ func NewDAGExecutor(mm *broker.MemoryManager, cm *broker.CheckpointManager, pyEx
 	}
 }
 
+// 🛡️ THE FIX: Dynamically resolves the correct source directory based on DAG ancestry.
+// This allows the Audio branch and Video branch to maintain completely separate bucket timelines.
+func (d *DAGExecutor) getChunkSourceDir(jobID, compName string) string {
+	curr := compName
+	for {
+		meta := d.MemoryManager.PipelineDAG[curr]
+		if meta.ExecutionMode == "sequential" {
+			return filepath.Join(d.ProjectRoot, "workspace", "jobs", jobID, "out_"+curr)
+		}
+		if len(meta.DependsOn) == 0 {
+			break
+		}
+		curr = meta.DependsOn[0]
+	}
+	return ""
+}
+
 func (d *DAGExecutor) EvaluateJob(jobID string) {
 	job := d.CheckpointManager.GetJob(jobID)
 	if job == nil {
@@ -39,7 +56,7 @@ func (d *DAGExecutor) EvaluateJob(jobID string) {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
-	// 🛡️ THE FIX: Transient Retry Tracker
+	// 🛡️ Transient Retry Tracker
 	// This map lives only as long as the job is running. It tracks how many times
 	// a specific task has failed to prevent infinite crash loops.
 	retryCounts := make(map[string]int)
@@ -84,8 +101,9 @@ func (d *DAGExecutor) EvaluateJob(jobID string) {
 							break
 						}
 					} else if depMeta.ExecutionMode == "chunked" {
-						frameExtDir := filepath.Join(d.ProjectRoot, "workspace", "jobs", jobID, "out_FrameExtractor")
-						entries, err := os.ReadDir(frameExtDir)
+						// Wait for ALL buckets in the target branch to finish
+						chunkDir := d.getChunkSourceDir(jobID, dep)
+						entries, err := os.ReadDir(chunkDir)
 						if err != nil {
 							canRunSeq = false
 							break
@@ -95,19 +113,17 @@ func (d *DAGExecutor) EvaluateJob(jobID string) {
 						for _, entry := range entries {
 							if entry.IsDir() && strings.HasPrefix(entry.Name(), "bucket_") {
 								bucketCount++
+								chunkID := entry.Name()
+								if job.Chunks[chunkID] == nil || job.Chunks[chunkID].Components[dep] != broker.StateDone {
+									canRunSeq = false
+									break
+								}
 							}
 						}
 
-						if bucketCount == 0 || len(job.Chunks) != bucketCount {
+						if bucketCount == 0 {
 							canRunSeq = false
 							break
-						}
-
-						for _, chunk := range job.Chunks {
-							if chunk.Components[dep] != broker.StateDone {
-								canRunSeq = false
-								break
-							}
 						}
 					}
 				}
@@ -135,8 +151,10 @@ func (d *DAGExecutor) EvaluateJob(jobID string) {
 			// 2. CHUNKED DAEMON EXECUTION
 			// ==========================================
 			if meta.ExecutionMode == "chunked" {
-				frameExtDir := filepath.Join(d.ProjectRoot, "workspace", "jobs", jobID, "out_FrameExtractor")
-				entries, err := os.ReadDir(frameExtDir)
+
+				// 🛡️ THE FIX: Dynamically fetch buckets exclusively for this component's branch
+				chunkDir := d.getChunkSourceDir(jobID, compName)
+				entries, err := os.ReadDir(chunkDir)
 				if err != nil {
 					continue
 				}
@@ -194,7 +212,7 @@ func (d *DAGExecutor) EvaluateJob(jobID string) {
 					}
 
 					if currentState == "" || currentState == broker.StatePending {
-						inputPath := filepath.Join(frameExtDir, chunkID)
+						inputPath := filepath.Join(chunkDir, chunkID)
 						job.UpdateChunkState(chunkID, compName, broker.StateQueued)
 
 						d.MemoryManager.PushBucket(broker.BucketTask{
@@ -230,6 +248,7 @@ func (d *DAGExecutor) EvaluateJob(jobID string) {
 	}
 }
 
+// 🛡️ THE FIX: Deep-scans both audio and video buckets dynamically to guarantee job completion
 func (d *DAGExecutor) isJobComplete(job *broker.JobManifest) bool {
 	job.Mu.Lock()
 	defer job.Mu.Unlock()
@@ -238,31 +257,27 @@ func (d *DAGExecutor) isJobComplete(job *broker.JobManifest) bool {
 		if meta.ExecutionMode == "sequential" && job.GlobalTasks[compName] != broker.StateDone {
 			return false
 		}
-	}
 
-	frameExtDir := filepath.Join(d.ProjectRoot, "workspace", "jobs", job.JobID, "out_FrameExtractor")
-	entries, err := os.ReadDir(frameExtDir)
-	if err != nil {
-		return false
-	}
+		if meta.ExecutionMode == "chunked" {
+			chunkDir := d.getChunkSourceDir(job.JobID, compName)
+			entries, err := os.ReadDir(chunkDir)
+			if err != nil {
+				return false
+			}
 
-	bucketCount := 0
-	for _, entry := range entries {
-		if entry.IsDir() && strings.HasPrefix(entry.Name(), "bucket_") {
-			bucketCount++
-		}
-	}
-
-	if bucketCount == 0 || len(job.Chunks) != bucketCount {
-		return false
-	}
-
-	for _, chunk := range job.Chunks {
-		for compName, meta := range d.MemoryManager.PipelineDAG {
-			if meta.ExecutionMode == "chunked" {
-				if state, exists := chunk.Components[compName]; !exists || state != broker.StateDone {
-					return false
+			bucketCount := 0
+			for _, entry := range entries {
+				if entry.IsDir() && strings.HasPrefix(entry.Name(), "bucket_") {
+					bucketCount++
+					chunkID := entry.Name()
+					if chunk, exists := job.Chunks[chunkID]; !exists || chunk.Components[compName] != broker.StateDone {
+						return false
+					}
 				}
+			}
+
+			if bucketCount == 0 {
+				return false
 			}
 		}
 	}

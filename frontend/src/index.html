@@ -73,6 +73,11 @@
         .gateway-group { display: flex; gap: 8px; align-items: center; width: 100%; }
         input[type="text"] { flex-grow: 1; padding: 10px 14px; background: var(--bg-base); border: 1px solid var(--border-glow); color: white; border-radius: 6px; font-family: monospace; font-size: 0.85rem;}
         input[type="text"]:focus { outline: none; border-color: var(--accent); }
+        
+        select { padding: 10px; background: var(--bg-base); border: 1px solid var(--border-glow); color: white; border-radius: 6px; font-weight: 600; font-size: 0.85rem; outline: none; cursor: pointer; }
+        select:focus { border-color: var(--accent); }
+        select option:disabled { color: #ef4444; font-style: italic; background: rgba(239, 68, 68, 0.1);}
+
         button { padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 0.85rem; transition: all 0.2s; color: white;}
         .btn-exec { background: var(--accent); }
         .btn-exec:hover { background: #2563eb; }
@@ -92,7 +97,7 @@
 
         .middle-row { display: flex; flex-direction: column; flex-grow: 1; min-height: 0; }
         .legend-pill { background: var(--bg-base); padding: 4px 8px; border-radius: 4px; border: 1px solid var(--border-glow); font-size: 0.65rem; font-family: monospace;}
-        .dag-container { display: flex; align-items: center; padding: 20px; overflow-x: auto; gap: 15px; height: 100%; width: 100%; }
+        .dag-container { padding: 20px; overflow: auto; height: 100%; width: 100%; }
         .sys-node { background: var(--bg-base); border: 1px dashed var(--border-glow); border-radius: 6px; padding: 8px 12px; font-weight: bold; color: var(--text-muted); font-size: 0.75rem; letter-spacing: 0.05em; flex-shrink: 0;}
         .sys-node.active { border: 1px solid var(--success); color: var(--success); background: var(--success-dim);}
         .dag-node { background: var(--bg-base); border: 1px solid var(--border-dim); border-radius: 8px; padding: 10px 12px; width: 150px; flex-shrink: 0; transition: all 0.3s ease; display: flex; flex-direction: column; gap: 6px;}
@@ -109,9 +114,6 @@
         .dag-edge { color: var(--border-glow); font-size: 1.2rem; font-weight: bold;}
         .dag-edge.active { color: var(--accent); }
         .prog-container { display: flex; flex-direction: column; gap: 2px; max-height: 40px; overflow-y: auto; padding-right: 2px;}
-        .dag-split-container { display: flex; align-items: center; gap: 15px;}
-        .dag-parallel-tracks { display: flex; flex-direction: column; gap: 20px;}
-        .dag-track-row { display: flex; align-items: center; gap: 15px;}
 
         .bottom-row { display: grid; grid-template-columns: 1.5fr 2fr 1fr; gap: 15px; height: 220px; flex-shrink: 0; }
         table { width: 100%; border-collapse: collapse; }
@@ -185,7 +187,12 @@
             <div class="op-kpi-card" style="flex: 2; padding: 20px; text-align: left;">
                 <div class="op-kpi-label" style="margin-bottom: 12px;">Job Injection Gateway</div>
                 <div class="gateway-group">
-                    <input type="text" id="targetPathOp" placeholder="Provide absolute file path (.mp4)" oninput="syncPath(this.value)">
+                    <input type="text" id="targetPathOp" placeholder="Provide absolute file path (.mp4)" oninput="syncInputs()">
+                    <select id="targetLangOp" onchange="syncInputs()">
+                        <option value="en">English (en)</option>
+                        <option value="hi" selected>Hindi (hi)</option>
+                        <option value="mr">Marathi (mr)</option>
+                    </select>
                     <button class="btn-exec" onclick="submitJob()">Execute</button>
                     <button class="btn-stop" onclick="stopJob()">Stop</button>
                     <button class="btn-resume" onclick="resumeJob()">Resume</button>
@@ -220,7 +227,12 @@
                 <div class="card-header">Job Injection Gateway</div>
                 <div class="card-body" style="display: flex; align-items: center;">
                     <div class="gateway-group">
-                        <input type="text" id="targetPath" placeholder="Provide absolute file path (.mp4)" oninput="syncPath(this.value)">
+                        <input type="text" id="targetPath" placeholder="Provide absolute file path (.mp4)" oninput="syncInputs()">
+                        <select id="targetLang" onchange="syncInputs()">
+                            <option value="en">English (en)</option>
+                            <option value="hi" selected>Hindi (hi)</option>
+                            <option value="mr">Marathi (mr)</option>
+                        </select>
                         <button class="btn-exec" onclick="submitJob()">Execute</button>
                         <button class="btn-stop" onclick="stopJob()">Stop</button>
                         <button class="btn-resume" onclick="resumeJob()">Resume</button>
@@ -284,19 +296,21 @@
             document.getElementById('appBody').className = document.getElementById('modeSwitch').checked ? 'mode-operator' : 'mode-tech';
         }
 
-        function syncPath(val) {
-            const techPath = document.getElementById('targetPath');
-            const opPath = document.getElementById('targetPathOp');
-            if (techPath && techPath.value !== val) techPath.value = val;
-            if (opPath && opPath.value !== val) opPath.value = val;
+        function syncInputs() {
+            const isOp = document.getElementById('modeSwitch').checked;
+            const path = isOp ? document.getElementById('targetPathOp').value : document.getElementById('targetPath').value;
+            const lang = isOp ? document.getElementById('targetLangOp').value : document.getElementById('targetLang').value;
+            
+            document.getElementById('targetPath').value = path;
+            document.getElementById('targetPathOp').value = path;
+            document.getElementById('targetLang').value = lang;
+            document.getElementById('targetLangOp').value = lang;
 
-            // 🛡️ FIX: If user starts typing a real path (e.g. D:\video.mp4), wake up the Execute button
-            if (!val.startsWith("JOB-") && val.length > 0) {
+            if (!path.startsWith("JOB-") && path.length > 0) {
                 updateButtonStates('idle');
             }
         }
 
-        // 🛡️ FIX: Added a 'completed' state to lock out the Execute button
         function updateButtonStates(state) {
             document.querySelectorAll('.btn-exec').forEach(btn => {
                 if (state === 'idle') {
@@ -317,7 +331,8 @@
 
         function selectJob(id, status) {
             currentJobId = id;
-            syncPath(id);
+            document.getElementById('targetPath').value = id;
+            document.getElementById('targetPathOp').value = id;
 
             let upperStatus = status.toUpperCase();
             if (upperStatus === "RUNNING") {
@@ -331,7 +346,6 @@
                 document.getElementById("opStatusTitle").style.color = "var(--warning)";
                 document.getElementById("opStep2").className = "op-step";
             } else if (upperStatus === "DONE" || upperStatus === "COMPLETED") {
-                // 🛡️ FIX: Route to the new locked 'completed' UI state
                 updateButtonStates('completed');
                 document.getElementById("opStatusTitle").innerText = "Processing Complete";
                 document.getElementById("opStatusTitle").style.color = "var(--success)";
@@ -344,22 +358,6 @@
             try {
                 const manifest = await window.go.main.App.GetPipelineManifest();
                 dynamicComps = Object.keys(manifest);
-
-                let root = dynamicComps.find(k => !manifest[k].depends_on || manifest[k].depends_on.length === 0);
-                let branchHeads = dynamicComps.filter(k => manifest[k].depends_on && manifest[k].depends_on.includes(root));
-
-                function traceBranch(head) {
-                    let chain = [head];
-                    let current = head;
-                    while(true) {
-                        let next = dynamicComps.find(k => manifest[k].depends_on && manifest[k].depends_on.includes(current));
-                        if(next) { chain.push(next); current = next; } else { break; }
-                    }
-                    return chain;
-                }
-
-                let track1 = branchHeads.length > 0 ? traceBranch(branchHeads[0]) : [];
-                let track2 = branchHeads.length > 1 ? traceBranch(branchHeads[1]) : [];
 
                 function buildNode(comp) {
                     let meta = manifest[comp];
@@ -379,23 +377,46 @@
                     return html;
                 }
 
+                function buildTree(nodeId) {
+                    let children = dynamicComps.filter(k => manifest[k].depends_on && manifest[k].depends_on.includes(nodeId));
+                    let nodeHtml = buildNode(nodeId);
+                    
+                    if (children.length === 0) {
+                        return nodeHtml;
+                    }
+                    
+                    if (children.length === 1) {
+                        return `<div style="display: flex; align-items: center;">
+                                    ${nodeHtml}
+                                    <div class="dag-edge" style="margin: 0 15px;">➔</div>
+                                    ${buildTree(children[0])}
+                                </div>`;
+                    }
+                    
+                    let childrenHtml = children.map(child => 
+                        `<div style="display: flex; align-items: center; position: relative; padding: 10px 0;">
+                            <div style="width: 20px; height: 2px; background: var(--border-glow);"></div>
+                            <div class="dag-edge" style="margin: 0 10px 0 5px;">➔</div>
+                            ${buildTree(child)}
+                         </div>`
+                    ).join('');
+                    
+                    return `<div style="display: flex; align-items: center;">
+                                ${nodeHtml}
+                                <div style="display: flex; flex-direction: column; justify-content: center; border-left: 2px dashed var(--border-glow); margin-left: 15px;">
+                                    ${childrenHtml}
+                                </div>
+                            </div>`;
+                }
+
+                let root = dynamicComps.find(k => !manifest[k].depends_on || manifest[k].depends_on.length === 0);
+
                 let html = `
-                    <div class="dag-split-container">
+                    <div style="display: flex; align-items: center; width: max-content;">
                         <div class="sys-node" id="node-START">INGEST</div>
-                        <div class="dag-edge">➔</div>
-                        ${root ? buildNode(root) : ''}
-                        <div class="dag-edge">➔</div>
-                        
-                        <div class="dag-parallel-tracks">
-                            <div class="dag-track-row">
-                                ${track1.map(c => buildNode(c)).join('<div class="dag-edge">➔</div>')}
-                            </div>
-                            <div class="dag-track-row">
-                                ${track2.map(c => buildNode(c)).join('<div class="dag-edge">➔</div>')}
-                            </div>
-                        </div>
-                        
-                        <div class="dag-edge">➔</div>
+                        <div class="dag-edge" style="margin: 0 15px;">➔</div>
+                        ${root ? buildTree(root) : ''}
+                        <div class="dag-edge" style="margin: 0 15px;">➔</div>
                         <div class="sys-node" id="node-END">OUT</div>
                     </div>
                 `;
@@ -452,27 +473,25 @@
         }, 2000);
 
         function submitJob() {
-            const pathInput = document.getElementById('modeSwitch').checked ? document.getElementById("targetPathOp") : document.getElementById("targetPath");
-            const path = pathInput.value.trim();
+            const path = document.getElementById("targetPath").value.trim();
+            const lang = document.getElementById("targetLang").value;
             if (!path) return;
 
-            // 🛡️ FIX: Final UI validation block
             if (path.startsWith("JOB-")) {
                 alert("Cannot inject an existing Job ID.\n\nTo start a new pipeline, please provide a valid absolute file path to a media file (e.g., D:\\videos\\sample.mp4).");
                 return;
             }
             
+            // 🛡️ THE FIX: Pre-emptively transition UI state and bypass syncInputs()
             updateButtonStates('running');
-            
             document.getElementById("opStatusTitle").innerText = "Processing Active";
             document.getElementById("opStatusTitle").style.color = "var(--accent)";
             document.getElementById("opStep1").className = "op-step done";
             document.getElementById("opLine1").className = "op-line active";
             document.getElementById("opStep2").className = "op-step active";
             
-            window.go.main.App.SubmitJob(path).then(jobId => {
-                currentJobId = jobId || path;
-                syncPath(currentJobId); 
+            window.go.main.App.SubmitJob(path, lang).then(jobId => {
+                selectJob(jobId, "RUNNING"); 
             }).catch(err => {
                 alert(err);
                 updateButtonStates('idle');
@@ -491,8 +510,7 @@
 
         function resumeJob() {
             if (!currentJobId) {
-                const pathInput = document.getElementById('modeSwitch').checked ? document.getElementById("targetPathOp") : document.getElementById("targetPath");
-                currentJobId = pathInput.value.trim();
+                currentJobId = document.getElementById("targetPath").value.trim();
             }
             if (!currentJobId) return;
 
@@ -523,7 +541,26 @@
 
             let logHtml = "";
             data.alerts.forEach(log => {
-                let colorClass = log.includes("✅") ? "log-success" : log.includes("❌") ? "log-error" : log.includes("🛑") || log.includes("🧹") || log.includes("⚠️") ? "log-warn" : "";
+                if (log.includes("🔍 Detected Source Language:")) {
+                    let lang = log.split("Detected Source Language: ")[1].trim().toLowerCase();
+                    let selects = [document.getElementById('targetLang'), document.getElementById('targetLangOp')];
+                    selects.forEach(sel => {
+                        if(!sel) return;
+                        Array.from(sel.options).forEach(opt => {
+                            if (opt.value === lang) {
+                                opt.disabled = true;
+                                if (!opt.text.includes("(Blacked Out)")) {
+                                    opt.text = opt.text + " (Blacked Out)";
+                                }
+                            } else {
+                                opt.disabled = false;
+                                opt.text = opt.text.replace(" (Blacked Out)", "");
+                            }
+                        });
+                    });
+                }
+                
+                let colorClass = log.includes("✅") ? "log-success" : log.includes("❌") ? "log-error" : log.includes("🛑") || log.includes("🧹") || log.includes("⚠️") || log.includes("🔍") ? "log-warn" : "";
                 logHtml += `<div class="log-line ${colorClass}">${log}</div>`;
             });
             

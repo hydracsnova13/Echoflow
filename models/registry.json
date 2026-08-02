@@ -13,5 +13,10 @@
         "model_path": "models/whisper-small",
         "framework": "faster-whisper",
         "estimated_ram_mb": 1200.0
+    },
+    "NLLBDaemon": {
+        "model_path": "models/nllb-200-distilled-600M",
+        "framework": "transformers",
+        "estimated_ram_mb": 2000.0
     }
 }

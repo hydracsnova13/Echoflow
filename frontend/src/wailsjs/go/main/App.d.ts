@@ -11,4 +11,4 @@ export function ResumeJob(arg1:string):Promise<void>;
 
 export function StopJob(arg1:string):Promise<void>;
 
-export function SubmitJob(arg1:string):Promise<string>;
+export function SubmitJob(arg1:string,arg2:string):Promise<string>;

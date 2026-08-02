@@ -17,7 +17,7 @@ def setup_model_garden():
     print("=========================================================\n")
 
     # ---------------------------------------------------------
-    # 1. Download AI Models into Model Garden (Video + ASR)
+    # 1. Download AI Models into Model Garden (Video + ASR + NMT)
     # ---------------------------------------------------------
     # A. OpenCV YuNet
     yunet_url = "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
@@ -41,21 +41,33 @@ def setup_model_garden():
     else:
         print("✅ MediaPipe Task Model already exists.")
 
-    # C. Faster-Whisper Small Model (Offline Cache)
+    # C. Faster-Whisper Small Model
     whisper_dir = os.path.join(models_dir, "whisper-small")
     if not os.path.exists(whisper_dir) or not os.listdir(whisper_dir):
         print("Downloading Whisper 'small' model weights into Model Garden...")
         try:
             from faster_whisper import download_model
-            # This directly downloads the HF snapshot into the models/whisper-small directory
             download_model("small", output_dir=whisper_dir)
             print("✅ Whisper 'small' model weights cached successfully.")
         except ImportError:
             print("❌ Error: 'faster-whisper' is not installed in the current environment.")
-            print("   Please run 'pip install -r requirements.txt' inside your .venv.")
             sys.exit(1)
     else:
         print("✅ Whisper model already cached in Model Garden.")
+
+    # D. NLLB-200 Translation Model
+    nmt_dir = os.path.join(models_dir, "nllb-200-distilled-600M")
+    if not os.path.exists(nmt_dir) or not os.listdir(nmt_dir):
+        print("Downloading NLLB-200 Distilled 600M model weights into Model Garden...")
+        try:
+            from huggingface_hub import snapshot_download
+            snapshot_download(repo_id="facebook/nllb-200-distilled-600M", local_dir=nmt_dir, local_files_only=False)
+            print("✅ NLLB-200 model weights cached successfully.")
+        except ImportError:
+            print("❌ Error: 'huggingface_hub' is not installed in the current environment.")
+            sys.exit(1)
+    else:
+        print("✅ NLLB-200 model already cached in Model Garden.")
 
     # ---------------------------------------------------------
     # 2. Download Hermetic FFmpeg
@@ -65,7 +77,7 @@ def setup_model_garden():
     ffmpeg_exe = os.path.join(venv_scripts_dir, "ffmpeg.exe")
     
     if not os.path.exists(ffmpeg_exe):
-        print("\nDownloading FFmpeg (Windows Static Build)... This might take a minute.")
+        print("\nDownloading FFmpeg (Windows Static Build)...")
         ffmpeg_url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
         
         req = urllib.request.urlopen(ffmpeg_url)
@@ -97,11 +109,16 @@ def setup_model_garden():
             "model_path": "models/whisper-small",
             "framework": "faster-whisper",
             "estimated_ram_mb": 1200.0
+        },
+        "NLLBDaemon": {
+            "model_path": "models/nllb-200-distilled-600M",
+            "framework": "transformers",
+            "estimated_ram_mb": 2000.0
         }
     }
     with open(os.path.join(models_dir, "registry.json"), "w") as f:
         json.dump(registry, f, indent=4)
-    print("✅ models/registry.json updated with Video + ASR RAM footprints.")
+    print("✅ models/registry.json updated with STT and NMT RAM footprints.")
 
     # ---------------------------------------------------------
     # 4. Generate Combined Multi-Branch Pipeline DAG (manifest.json)
@@ -178,7 +195,24 @@ def setup_model_garden():
             "depends_on": ["WhisperTranscriber"],
             "script": "pipeline/audio/transcript_aggregator.py",
             "accepted_inputs": ["directory"],
+            "produces": ".json, .srt"
+        },
+        "NMTTranslator": {
+            "domain": "ram",
+            "execution_mode": "chunked",
+            "depends_on": ["WhisperTranscriber"],
+            "model_ref": "NLLBDaemon",
+            "script": "pipeline/audio/nmt_daemon.py",
+            "accepted_inputs": [".json"],
             "produces": ".json"
+        },
+        "SubtitleAggregator": {
+            "domain": "cpu",
+            "execution_mode": "sequential",
+            "depends_on": ["NMTTranslator"],
+            "script": "pipeline/audio/subtitle_aggregator.py",
+            "accepted_inputs": ["directory"],
+            "produces": ".json, .srt"
         }
     }
 

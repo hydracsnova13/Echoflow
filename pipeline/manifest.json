@@ -117,6 +117,31 @@
         "accepted_inputs": [
             "directory"
         ],
+        "produces": ".json, .srt"
+    },
+    "NMTTranslator": {
+        "domain": "ram",
+        "execution_mode": "chunked",
+        "depends_on": [
+            "WhisperTranscriber"
+        ],
+        "model_ref": "NLLBDaemon",
+        "script": "pipeline/audio/nmt_daemon.py",
+        "accepted_inputs": [
+            ".json"
+        ],
         "produces": ".json"
+    },
+    "SubtitleAggregator": {
+        "domain": "cpu",
+        "execution_mode": "sequential",
+        "depends_on": [
+            "NMTTranslator"
+        ],
+        "script": "pipeline/audio/subtitle_aggregator.py",
+        "accepted_inputs": [
+            "directory"
+        ],
+        "produces": ".json, .srt"
     }
 }

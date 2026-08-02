@@ -10,3 +10,9 @@ mediapipe
 faster-whisper>=1.0.0
 silero-vad>=5.0.0
 soundfile>=0.12.0
+
+# NMT Pipeline (Audio Continuation)
+torch>=2.0.0
+transformers>=4.30.0
+sentencepiece>=0.1.99
+huggingface-hub>=0.14.1

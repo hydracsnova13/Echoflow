@@ -18,6 +18,6 @@ export function StopJob(arg1) {
   return window['go']['main']['App']['StopJob'](arg1);
 }
 
-export function SubmitJob(arg1) {
-  return window['go']['main']['App']['SubmitJob'](arg1);
+export function SubmitJob(arg1, arg2) {
+  return window['go']['main']['App']['SubmitJob'](arg1, arg2);
 }
