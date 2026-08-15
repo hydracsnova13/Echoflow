@@ -213,6 +213,21 @@ func (m *MemoryManager) PushBucket(task BucketTask) {
 	m.PendingBuckets[task.Component] = append(m.PendingBuckets[task.Component], task)
 }
 
+func (m *MemoryManager) ClearPendingForJob(jobID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for comp, queue := range m.PendingBuckets {
+		var filtered []BucketTask
+		for _, task := range queue {
+			if task.JobID != jobID {
+				filtered = append(filtered, task)
+			}
+		}
+		m.PendingBuckets[comp] = filtered
+	}
+}
+
 func (m *MemoryManager) EvaluateQueuesNow() {
 	go m.evaluateQueues()
 }

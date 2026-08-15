@@ -122,7 +122,7 @@ func (a *App) SubmitJob(targetPath string, targetLang string, targetOutFormat st
 	if _, err := os.Stat(targetPath); os.IsNotExist(err) {
 		errMsg := fmt.Sprintf("⚠️ File does not exist: %s", targetPath)
 		a.MM.LogToUI(errMsg)
-		return "", fmt.Errorf(errMsg)
+		return "", fmt.Errorf("%s", errMsg)
 	}
 
 	jobID := fmt.Sprintf("JOB-%d", time.Now().Unix())
@@ -180,6 +180,7 @@ func (a *App) GetPipelineManifest() map[string]broker.PipelineComponent {
 }
 
 func (a *App) StopJob(jobID string) error {
+	jobID = strings.Trim(strings.TrimSpace(jobID), "\"'")
 	a.MM.LogToUI(fmt.Sprintf("🛑 Stopping Job: %s...", jobID))
 	job := a.MM.Checkpoints.GetJob(jobID)
 
@@ -193,11 +194,13 @@ func (a *App) StopJob(jobID string) error {
 	}
 
 	job.SetStatus(broker.JobPaused)
+	a.MM.ClearPendingForJob(jobID)
 	a.MM.LogToUI(fmt.Sprintf("✅ Job %s successfully paused. Engine will gracefully halt.", jobID))
 	return nil
 }
 
 func (a *App) ResumeJob(jobID string) error {
+	jobID = strings.Trim(strings.TrimSpace(jobID), "\"'")
 	a.MM.LogToUI(fmt.Sprintf("▶️ Resuming Job: %s...", jobID))
 	job := a.MM.Checkpoints.GetJob(jobID)
 
@@ -210,28 +213,15 @@ func (a *App) ResumeJob(jobID string) error {
 		}
 	}
 
-	job.Mu.Lock()
-	for k, v := range job.GlobalTasks {
-		if v == broker.StateError {
-			job.GlobalTasks[k] = broker.StatePending
-		}
-	}
-	for chunkID, chunk := range job.Chunks {
-		for k, v := range chunk.Components {
-			if v == broker.StateError {
-				job.Chunks[chunkID].Components[k] = broker.StatePending
-			}
-		}
-	}
-	job.Status = broker.JobRunning
-	job.Mu.Unlock()
-
+	a.MM.ClearPendingForJob(jobID)
+	job.ResetIncompleteTasks()
 	job.Save()
 
-	time.Sleep(1 * time.Second)
+	time.Sleep(200 * time.Millisecond)
 
 	go a.DAG.EvaluateJob(jobID)
-	a.MM.LogToUI(fmt.Sprintf("✅ Job %s resumed. Retrying failed tasks and re-queuing.", jobID))
+	a.MM.EvaluateQueuesNow()
+	a.MM.LogToUI(fmt.Sprintf("✅ Job %s resumed. Re-queuing incomplete tasks for execution.", jobID))
 	return nil
 }
 

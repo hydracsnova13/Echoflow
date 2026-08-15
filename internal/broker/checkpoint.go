@@ -115,6 +115,27 @@ func (jm *JobManifest) SetStatus(status JobStatus) {
 	jm.Save()
 }
 
+// 🛡️ ResetIncompleteTasks resets all non-completed tasks (RUNNING, QUEUED, ERROR) back to PENDING/unstarted
+// so that resuming a paused or crashed job will cleanly re-execute them.
+func (jm *JobManifest) ResetIncompleteTasks() {
+	jm.Mu.Lock()
+	defer jm.Mu.Unlock()
+
+	for k, v := range jm.GlobalTasks {
+		if v != StateDone {
+			delete(jm.GlobalTasks, k)
+		}
+	}
+	for _, chunk := range jm.Chunks {
+		for comp, state := range chunk.Components {
+			if state != StateDone {
+				chunk.Components[comp] = StatePending
+			}
+		}
+	}
+	jm.Status = JobRunning
+}
+
 type StaleChunk struct {
 	ChunkID   string
 	Component string
@@ -127,7 +148,7 @@ func (jm *JobManifest) GetStaleQueuedChunks() []StaleChunk {
 	var stale []StaleChunk
 	for chunkID, chunk := range jm.Chunks {
 		for comp, state := range chunk.Components {
-			if state == StateQueued {
+			if state == StateQueued || state == StateRunning {
 				stale = append(stale, StaleChunk{ChunkID: chunkID, Component: comp})
 			}
 		}

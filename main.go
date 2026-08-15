@@ -34,10 +34,13 @@ func main() {
 
 	for jobID, job := range checkpointManager.ActiveJobs {
 		if job.Status == broker.JobPaused {
-			job.SetStatus(broker.JobRunning)
+			job.ResetIncompleteTasks()
+			job.Save()
 			memoryManager.LogToUI(fmt.Sprintf("▶️ Resumed Job %s from Checkpoint", jobID))
 		}
 		if job.Status != broker.JobDone {
+			job.ResetIncompleteTasks()
+			job.Save()
 			go dagExecutor.EvaluateJob(jobID)
 		}
 	}
