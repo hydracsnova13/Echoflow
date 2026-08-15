@@ -136,8 +136,19 @@ setuptools<70
     try:
         sync_script = f"""
 from huggingface_hub import snapshot_download, login
+from huggingface_hub.utils import HfFolder
 import os
-login(token="YOUR_HF_TOKEN_HERE")
+
+hf_token = os.environ.get("HF_TOKEN") or HfFolder.get_token()
+if hf_token:
+    print("🔑 Hugging Face Access Token detected.")
+    login(token=hf_token)
+else:
+    print("⚠️  WARNING: No HF_TOKEN environment variable or cached token found!")
+    print("ℹ️  Note: Pyannote models (speaker-diarization-3.1 & segmentation-3.0) are gated.")
+    print("   Please set export HF_TOKEN='your_token' (or set HF_TOKEN=your_token on Windows)")
+    print("   and accept conditions on https://huggingface.co/pyannote/speaker-diarization-3.1")
+
 models_dir = r"{models_dir}"
 models = {{
     "Systran/faster-whisper-small": "whisper-small",
@@ -150,7 +161,13 @@ models = {{
 }}
 for repo_id, folder_name in models.items():
     print(f"Syncing {{repo_id}}...")
-    snapshot_download(repo_id=repo_id, local_dir=os.path.join(models_dir, folder_name), local_dir_use_symlinks=False)
+    try:
+        snapshot_download(repo_id=repo_id, local_dir=os.path.join(models_dir, folder_name), local_dir_use_symlinks=False)
+    except Exception as err:
+        print(f"❌ Failed to download {{repo_id}}: {{err}}")
+        if "pyannote" in repo_id:
+            print("   👉 Pyannote models require an HF Access Token with accepted user conditions.")
+            print("      Set HF_TOKEN environment variable and accept terms on HuggingFace.")
 
 print("Syncing myshell-ai/OpenVoiceV2 (Converter only)...")
 snapshot_download(repo_id="myshell-ai/OpenVoiceV2", allow_patterns=["converter/*"], local_dir=os.path.join(models_dir, "offline_openvoice"), local_dir_use_symlinks=False)

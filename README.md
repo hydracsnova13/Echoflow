@@ -179,7 +179,12 @@ Before initializing the project, ensure your host machine has the following inst
 | **Node.js** | `18+` | [nodejs.org](https://nodejs.org/) — required for compiling the Wails frontend assets |
 | **Python** | `3.12` | Primary runtime for `env_core` (Whisper, NMT, FFmpeg processing) |
 | **Python** | `3.10` | Required for `env_tts` (OpenVoice, Pyannote, MMS TTS) |
+| **Hugging Face Token** | User Access Token (Read) | **Mandatory** for downloading gated Pyannote models (`HF_TOKEN`) |
 | **Wails CLI** | `v2` | Install via: `go install github.com/wailsapp/wails/v2/cmd/wails@latest` |
+
+> [!IMPORTANT]
+> **Hugging Face Access Token (`HF_TOKEN`) is REQUIRED for initial setup!**  
+> Echoflow relies on Pyannote 3.1 for speaker diarization. Pyannote models are **gated models** on Hugging Face. You MUST accept the model user conditions on Hugging Face and export your HF token prior to running `setup_script.py`. See [Hugging Face Access Token Setup](#-hugging-face-access-token-setup) below.
 
 > [!NOTE]
 > **FFmpeg** is handled automatically by the setup script — it downloads a static binary into the project's `bin/` directory. You do **not** need to install FFmpeg globally.
@@ -189,13 +194,58 @@ Before initializing the project, ensure your host machine has the following inst
 
 ---
 
+## 🔑 Hugging Face Access Token Setup
+
+Pyannote models (`pyannote/speaker-diarization-3.1` and `pyannote/segmentation-3.0`) require a Hugging Face account and user access token. Follow these 4 quick steps before running `setup_script.py`:
+
+### 1. Create a Hugging Face Account
+If you don't have one, register for free at [huggingface.co/join](https://huggingface.co/join).
+
+### 2. Accept Model Conditions on Hugging Face
+Open both links in your browser while logged in and click **"Access repository"** / **"Accept conditions"**:
+- 🔗 [pyannote/speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1)
+- 🔗 [pyannote/segmentation-3.0](https://huggingface.co/pyannote/segmentation-3.0)
+
+> [!WARNING]
+> If you skip accepting the terms on HuggingFace, model downloads will fail with `401 Client Error: Cannot access gated repo` even if your token is valid.
+
+### 3. Generate a User Access Token
+1. Go to your Hugging Face [Access Tokens Settings](https://huggingface.co/settings/tokens).
+2. Click **Create new token**.
+3. Select Token Type **Read**.
+4. Copy the generated token string (starts with `hf_...`).
+
+### 4. Export the `HF_TOKEN` Environment Variable
+
+Before executing `python setup_script.py`, set `HF_TOKEN` in your terminal session:
+
+#### Windows (Command Prompt / CMD)
+```cmd
+set HF_TOKEN=hf_your_access_token_here
+python setup_script.py
+```
+
+#### Windows (PowerShell)
+```powershell
+$env:HF_TOKEN="hf_your_access_token_here"
+python setup_script.py
+```
+
+#### Linux / macOS (Bash / Zsh)
+```bash
+export HF_TOKEN="hf_your_access_token_here"
+python setup_script.py
+```
+
+---
+
 ## 🚀 Quick Start
 
 ### Step 1 — Automated Environment Initialization
 
 To prevent dependency conflicts between heavy audio/video AI libraries, Echoflow uses an **isolated multi-environment architecture**. The automated setup script scaffolds everything for you.
 
-Open your terminal in the project root and run:
+Make sure your `HF_TOKEN` environment variable is set as shown above, then run:
 
 ```cmd
 python setup_script.py
