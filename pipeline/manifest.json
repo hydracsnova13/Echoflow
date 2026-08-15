@@ -1,88 +1,22 @@
 {
     "MetadataProfiler": {
+        "env_name": "env_core",
         "domain": "cpu",
         "execution_mode": "sequential",
         "depends_on": [],
         "script": "pipeline/profiler.py",
         "accepted_inputs": [
-            ".3g2",
-            ".3gp",
-            ".avi",
-            ".asf",
-            ".f4v",
-            ".flv",
-            ".m2ts",
-            ".m2v",
-            ".m4v",
-            ".mkv",
-            ".mov",
-            ".mp4",
-            ".mpg",
-            ".mpeg",
-            ".mts",
-            ".mxf",
-            ".ogv",
-            ".rm",
-            ".rmvb",
-            ".ts",
-            ".vob",
-            ".webm",
-            ".wmv"
-        ],
-        "produces": "directory"
-    },
-    "FrameExtractor": {
-        "domain": "cpu",
-        "execution_mode": "sequential",
-        "depends_on": [
-            "MetadataProfiler"
-        ],
-        "script": "pipeline/video/generator_preprocessor/frame_extractor.py",
-        "accepted_inputs": [
-            "directory"
-        ],
-        "produces": "directory"
-    },
-    "FaceDetector": {
-        "domain": "ram",
-        "execution_mode": "chunked",
-        "depends_on": [
-            "FrameExtractor"
-        ],
-        "model_ref": "YunetFaceDetector_2023",
-        "script": "pipeline/video/generator_preprocessor/face_detector.py",
-        "accepted_inputs": [
-            "directory"
-        ],
-        "produces": ".json"
-    },
-    "FacialLandmarker": {
-        "domain": "ram",
-        "execution_mode": "chunked",
-        "depends_on": [
-            "FaceDetector"
-        ],
-        "model_ref": "GoogleFacialLandmarker",
-        "script": "pipeline/video/generator_preprocessor/landmarker.py",
-        "accepted_inputs": [
+            ".txt",
             ".json",
-            "directory"
-        ],
-        "produces": ".json"
-    },
-    "MouthIsolator": {
-        "domain": "cpu",
-        "execution_mode": "chunked",
-        "depends_on": [
-            "FacialLandmarker"
-        ],
-        "script": "pipeline/video/generator_preprocessor/mouth_isolator.py",
-        "accepted_inputs": [
-            ".json"
+            ".srt",
+            ".mp4",
+            ".wav",
+            ".mp3"
         ],
         "produces": "directory"
     },
     "AudioChunker": {
+        "env_name": "env_core",
         "domain": "cpu",
         "execution_mode": "sequential",
         "depends_on": [
@@ -95,6 +29,7 @@
         "produces": "directory"
     },
     "WhisperTranscriber": {
+        "env_name": "env_core",
         "domain": "ram",
         "execution_mode": "chunked",
         "depends_on": [
@@ -107,41 +42,74 @@
         ],
         "produces": ".json"
     },
-    "TranscriptAggregator": {
+    "SpeakerDiarizer": {
+        "env_name": "env_tts",
         "domain": "cpu",
         "execution_mode": "sequential",
         "depends_on": [
-            "WhisperTranscriber"
+            "MetadataProfiler"
+        ],
+        "script": "pipeline/audio/speaker_diarizer.py",
+        "accepted_inputs": [
+            "directory",
+            ".wav"
+        ],
+        "produces": "directory"
+    },
+    "TranscriptAggregator": {
+        "env_name": "env_core",
+        "domain": "cpu",
+        "execution_mode": "sequential",
+        "depends_on": [
+            "WhisperTranscriber",
+            "SpeakerDiarizer"
         ],
         "script": "pipeline/audio/transcript_aggregator.py",
         "accepted_inputs": [
             "directory"
         ],
-        "produces": ".json, .srt"
-    },
-    "NMTTranslator": {
-        "domain": "ram",
-        "execution_mode": "chunked",
-        "depends_on": [
-            "WhisperTranscriber"
-        ],
-        "model_ref": "NLLBDaemon",
-        "script": "pipeline/audio/nmt_daemon.py",
-        "accepted_inputs": [
-            ".json"
-        ],
         "produces": ".json"
     },
-    "SubtitleAggregator": {
+    "NMTTranslator": {
+        "env_name": "env_core",
         "domain": "cpu",
         "execution_mode": "sequential",
         "depends_on": [
-            "NMTTranslator"
+            "TranscriptAggregator"
         ],
-        "script": "pipeline/audio/subtitle_aggregator.py",
+        "script": "pipeline/audio/nmt_runner.py",
+        "accepted_inputs": [
+            "directory",
+            ".json"
+        ],
+        "produces": ".json, .srt"
+    },
+    "VoiceDubber": {
+        "env_name": "env_tts",
+        "domain": "cpu",
+        "execution_mode": "sequential",
+        "depends_on": [
+            "NMTTranslator",
+            "SpeakerDiarizer"
+        ],
+        "script": "pipeline/audio/voice_dubber.py",
+        "accepted_inputs": [
+            "directory",
+            ".srt"
+        ],
+        "produces": ".wav"
+    },
+    "MediaCompositor": {
+        "env_name": "env_core",
+        "domain": "cpu",
+        "execution_mode": "sequential",
+        "depends_on": [
+            "VoiceDubber"
+        ],
+        "script": "pipeline/video/media_compositor.py",
         "accepted_inputs": [
             "directory"
         ],
-        "produces": ".json, .srt"
+        "produces": ".mp4"
     }
 }

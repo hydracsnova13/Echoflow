@@ -7,12 +7,14 @@ import threading
 import queue
 from faster_whisper import WhisperModel
 
-os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["OPENBLAS_NUM_THREADS"] = "1"
-os.environ["MKL_NUM_THREADS"] = "1"
+# Enforce strict CPU limits for CTranslate2 (Faster-Whisper backend)
+num_cores = str(max(1, os.cpu_count() - 2))
+os.environ["OMP_NUM_THREADS"] = num_cores
+os.environ["OPENBLAS_NUM_THREADS"] = num_cores
+os.environ["MKL_NUM_THREADS"] = num_cores
 
 def send_ipc(data):
-    print(f"ECOFLOW_IPC__{json.dumps(data)}", flush=True)
+    print(f"ECHOFLOW_IPC__{json.dumps(data)}", flush=True)
 
 def reader_thread(q):
     for line in iter(sys.stdin.readline, ''):
@@ -27,15 +29,19 @@ def boot_daemon():
         send_ipc({"status": "error", "error": f"❌ FATAL: Local Whisper model missing."})
         return
 
-    device = os.environ.get("ASR_DEVICE", "cpu")
-    compute_type = "int8" if device == "cpu" else "float16"
+    device = "cpu"
+    compute_type = "int8"
 
-    model = WhisperModel(
-        local_model_path, 
-        device=device, 
-        compute_type=compute_type, 
-        local_files_only=True
-    )
+    try:
+        model = WhisperModel(
+            local_model_path, 
+            device=device, 
+            compute_type=compute_type, 
+            local_files_only=True
+        )
+    except Exception as e:
+        send_ipc({"status": "error", "error": f"❌ FATAL: Whisper Boot crash: {e}"})
+        return
 
     process = psutil.Process(os.getpid())
     send_ipc({"status": "ready", "actual_ram_mb": process.memory_info().rss / (1024 * 1024)})
@@ -57,45 +63,32 @@ def boot_daemon():
             req = json.loads(line)
             raw_input_target = req.get("input")
             chunk_name = os.path.basename(raw_input_target)
-
             bucket_prefix = "_".join(chunk_name.split("_")[0:2]) + "_" 
             
             curr = raw_input_target
             job_root = None
             while curr and os.path.dirname(curr) != curr:
-                if os.path.exists(os.path.join(curr, "out_AudioChunker")):
-                    job_root = curr
-                    break
                 if os.path.basename(curr).startswith("JOB-"):
                     job_root = curr
                     break
                 curr = os.path.dirname(curr)
-
             if job_root is None:
                 job_root = os.path.dirname(os.path.dirname(raw_input_target))
 
-            target_bucket_dir = None
+            target_bucket_dir = raw_input_target
             audio_chunker_dir = os.path.join(job_root, "out_AudioChunker")
-            
             if os.path.exists(audio_chunker_dir):
                 for d in os.listdir(audio_chunker_dir):
                     if d.startswith(bucket_prefix):
                         target_bucket_dir = os.path.join(audio_chunker_dir, d)
                         break
             
-            if target_bucket_dir is None:
-                target_bucket_dir = raw_input_target
-
             wav_path = os.path.join(target_bucket_dir, "chunk_audio.wav")
             meta_path = os.path.join(target_bucket_dir, "meta.json")
 
             if not os.path.exists(wav_path):
-                send_ipc({"status": "warn", "message": f"⚠️ No audio stream found for timeframe {bucket_prefix}. Skipping."})
+                send_ipc({"status": "warn", "message": f"⚠️ No audio stream found for timeframe {bucket_prefix}."})
                 send_ipc({"status": "success", "chunk": raw_input_target})
-                continue
-            
-            if not os.path.exists(meta_path):
-                send_ipc({"status": "error", "error": f"❌ Meta file not found at: {meta_path}"})
                 continue
 
             with open(meta_path, "r") as f:
@@ -105,16 +98,15 @@ def boot_daemon():
 
             segments, info = model.transcribe(
                 wav_path,
-                beam_size=1,
-                best_of=1,
+                beam_size=5, # 1
+                best_of=5, # 1
                 temperature=0.0,
-                language=os.environ.get("ASR_LANGUAGE", "en"),
+                language="en",
                 vad_filter=True, 
-                vad_parameters=dict(min_silence_duration_ms=1000),
+                vad_parameters=dict(min_silence_duration_ms=500), #1000
                 condition_on_previous_text=False
             )
 
-            # Extract detailed segments and map them to absolute timeline timestamps
             segments_data = []
             for seg in segments:
                 if seg.text.strip():
@@ -143,9 +135,8 @@ def boot_daemon():
             send_ipc({"status": "success", "chunk": raw_input_target})
 
         except queue.Empty:
-            send_ipc({"status": "warn", "message": f"🧹 WhisperTranscriber idle for {IDLE_TIMEOUT_SECONDS}s. Self-terminating to release RAM."})
+            send_ipc({"status": "warn", "message": f"🧹 Whisper idle. Terminating to release RAM."})
             break
-            
         except Exception as e:
             send_ipc({"status": "error", "error": f"❌ Inference Crash: {str(e)}"})
 

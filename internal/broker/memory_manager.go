@@ -33,6 +33,7 @@ type ModelConfig struct {
 }
 
 type PipelineComponent struct {
+	EnvName        string   `json:"env_name"`
 	Domain         string   `json:"domain"`
 	ExecutionMode  string   `json:"execution_mode"`
 	DependsOn      []string `json:"depends_on"`
@@ -87,7 +88,7 @@ type MemoryManager struct {
 	ActiveWorkers  []*WarmWorker
 	BootingWorkers map[string]int
 	mu             sync.Mutex
-	PythonExec     string
+	isEvaluating   int32
 	ProjectRoot    string
 	Checkpoints    *CheckpointManager
 	RecentAlerts   []string
@@ -95,13 +96,12 @@ type MemoryManager struct {
 	ctx            context.Context
 }
 
-func NewMemoryManager(maxRamMB float64, projectRoot, pythonExec string, cm *CheckpointManager) *MemoryManager {
+func NewMemoryManager(maxRamMB float64, projectRoot string, cm *CheckpointManager) *MemoryManager {
 	mgr := &MemoryManager{
 		PendingBuckets: make(map[string][]BucketTask),
 		ModelRegistry:  make(map[string]ModelConfig),
 		PipelineDAG:    make(map[string]PipelineComponent),
 		MaxRAMMB:       maxRamMB,
-		PythonExec:     pythonExec,
 		ProjectRoot:    projectRoot,
 		Checkpoints:    cm,
 		BootingWorkers: make(map[string]int),
@@ -121,6 +121,77 @@ func (m *MemoryManager) loadConfigs() {
 	if file, err := os.ReadFile(dagPath); err == nil {
 		json.Unmarshal(file, &m.PipelineDAG)
 	}
+}
+
+func (m *MemoryManager) GetPythonExec(envName string) string {
+	scriptPath := filepath.Join(m.ProjectRoot, ".envs", envName, "Scripts", "python.exe")
+	if _, err := os.Stat(scriptPath); err == nil {
+		return scriptPath
+	}
+	binExePath := filepath.Join(m.ProjectRoot, ".envs", envName, "bin", "python.exe")
+	if _, err := os.Stat(binExePath); err == nil {
+		return binExePath
+	}
+	binPath := filepath.Join(m.ProjectRoot, ".envs", envName, "bin", "python")
+	if _, err := os.Stat(binPath); err == nil {
+		return binPath
+	}
+	return scriptPath
+}
+
+// 🛡️ NEW: Real-time RAM Tracking for Sequential CPU Tasks
+func (m *MemoryManager) TrackCPUStart(comp string, pid int) float64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	meta := m.PipelineDAG[comp]
+	estRAM := 300.0
+	if modelCfg, ok := m.ModelRegistry[meta.ModelRef]; ok && modelCfg.EstimatedRamMB > 0 {
+		estRAM = modelCfg.EstimatedRamMB
+	} else {
+		switch comp {
+		case "SpeakerDiarizer":
+			estRAM = 1000.0
+		case "NMTTranslator":
+			estRAM = 1500.0
+		case "VoiceDubber":
+			estRAM = 2500.0
+		case "MetadataProfiler", "AudioChunker", "TranscriptAggregator":
+			estRAM = 200.0
+		}
+	}
+
+	m.CurrentRAMMB += estRAM
+
+	worker := &WarmWorker{
+		PID:          pid,
+		Component:    comp,
+		ActualRamMB:  estRAM,
+		Status:       "ACTIVE",
+		IsActive:     true,
+		CurrentChunk: "SEQUENTIAL",
+	}
+	m.ActiveWorkers = append(m.ActiveWorkers, worker)
+	return estRAM
+}
+
+func (m *MemoryManager) TrackCPUEnd(comp string, pid int, estRAM float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.CurrentRAMMB -= estRAM
+	if m.CurrentRAMMB < 0 {
+		m.CurrentRAMMB = 0
+	}
+
+	var retained []*WarmWorker
+	for _, w := range m.ActiveWorkers {
+		if w.PID == pid && w.Component == comp {
+			continue
+		}
+		retained = append(retained, w)
+	}
+	m.ActiveWorkers = retained
 }
 
 func (m *MemoryManager) LogToUI(msg string) {
@@ -154,6 +225,11 @@ func (m *MemoryManager) startAutoScalerLoop() {
 }
 
 func (m *MemoryManager) evaluateQueues() {
+	if !atomic.CompareAndSwapInt32(&m.isEvaluating, 0, 1) {
+		return
+	}
+	defer atomic.StoreInt32(&m.isEvaluating, 0)
+
 	m.PruneExcessWorkers()
 	m.recoverStaleQueued()
 
@@ -237,7 +313,9 @@ func (m *MemoryManager) spawnWorkerDynamic(comp string, meta PipelineComponent) 
 	estRAM := m.ModelRegistry[meta.ModelRef].EstimatedRamMB
 	m.CurrentRAMMB += estRAM
 
-	cmd := exec.Command(m.PythonExec, filepath.Join(m.ProjectRoot, meta.Script))
+	pythonExec := m.GetPythonExec(meta.EnvName)
+
+	cmd := exec.Command(pythonExec, filepath.Join(m.ProjectRoot, meta.Script))
 	cmd.Env = append(os.Environ(), "PYTHONIOENCODING=utf-8")
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 
@@ -261,9 +339,9 @@ func (m *MemoryManager) spawnWorkerDynamic(comp string, meta PipelineComponent) 
 		}
 		line := scanner.Text()
 
-		idx := strings.Index(line, "ECOFLOW_IPC__")
+		idx := strings.Index(line, "ECHOFLOW_IPC__")
 		if idx != -1 {
-			jsonStr := line[idx+len("ECOFLOW_IPC__"):]
+			jsonStr := line[idx+len("ECHOFLOW_IPC__"):]
 			var resp struct {
 				Status      string  `json:"status"`
 				ActualRamMB float64 `json:"actual_ram_mb"`
@@ -345,46 +423,59 @@ func (m *MemoryManager) executeTask(worker *WarmWorker, task BucketTask) {
 	worker.Stdin.Write(reqBytes)
 	worker.Stdin.Write([]byte("\n"))
 
-	for worker.Stdout.Scan() {
-		respLine := worker.Stdout.Text()
+	doneChan := make(chan struct{})
 
-		idx := strings.Index(respLine, "ECOFLOW_IPC__")
-		if idx != -1 {
-			jsonStr := respLine[idx+len("ECOFLOW_IPC__"):]
-			var resp map[string]interface{}
+	go func() {
+		for worker.Stdout.Scan() {
+			respLine := worker.Stdout.Text()
 
-			if err := json.Unmarshal([]byte(jsonStr), &resp); err == nil {
-				if resp["status"] == "success" {
-					job.UpdateChunkState(task.ChunkID, task.Component, StateDone)
-					m.LogToUI(fmt.Sprintf("✅ [%s] Chunk %s completed!", task.Component, task.ChunkID))
-					return
-				} else if resp["status"] == "progress" {
-					m.mu.Lock()
-					if chunkVal, ok := resp["chunk"].(string); ok {
-						worker.CurrentChunk = chunkVal
+			idx := strings.Index(respLine, "ECHOFLOW_IPC__")
+			if idx != -1 {
+				jsonStr := respLine[idx+len("ECHOFLOW_IPC__"):]
+				var resp map[string]interface{}
+
+				if err := json.Unmarshal([]byte(jsonStr), &resp); err == nil {
+					if resp["status"] == "success" {
+						job.UpdateChunkState(task.ChunkID, task.Component, StateDone)
+						m.LogToUI(fmt.Sprintf("✅ [%s] Chunk %s completed!", task.Component, task.ChunkID))
+						break
+					} else if resp["status"] == "progress" {
+						m.mu.Lock()
+						if chunkVal, ok := resp["chunk"].(string); ok {
+							worker.CurrentChunk = chunkVal
+						}
+						if pctVal, ok := resp["pct"].(float64); ok {
+							worker.ProgressPct = int(pctVal)
+						}
+						m.mu.Unlock()
+					} else {
+						job.UpdateChunkState(task.ChunkID, task.Component, StateError)
+						m.LogToUI(fmt.Sprintf("❌ [%s] Chunk Error: %s", task.Component, respLine))
+						break
 					}
-					if pctVal, ok := resp["pct"].(float64); ok {
-						worker.ProgressPct = int(pctVal)
-					}
-					m.mu.Unlock()
 				} else {
-					job.UpdateChunkState(task.ChunkID, task.Component, StateError)
-					m.LogToUI(fmt.Sprintf("❌ [%s] Chunk Error: %s", task.Component, respLine))
-					return
+					m.LogToUI(fmt.Sprintf("❌ [%s] IPC Parse Error: %v", task.Component, err))
 				}
 			} else {
-				m.LogToUI(fmt.Sprintf("❌ [%s] IPC Parse Error: %v", task.Component, err))
+				if strings.TrimSpace(respLine) != "" {
+					m.LogToUI(fmt.Sprintf("ℹ️ [%s] %s", task.Component, respLine))
+				}
 			}
-		} else {
-			if strings.TrimSpace(respLine) != "" {
-				m.LogToUI(fmt.Sprintf("ℹ️ [%s] %s", task.Component, respLine))
-			}
-			continue
+		}
+		close(doneChan)
+	}()
+
+	select {
+	case <-doneChan:
+		return
+	case <-time.After(15 * time.Minute):
+		job.UpdateChunkState(task.ChunkID, task.Component, StateError)
+		m.LogToUI(fmt.Sprintf("❌ [%s] Task timeout! Daemon froze on %s", task.Component, task.ChunkID))
+		if worker.Cmd != nil && worker.Cmd.Process != nil {
+			worker.Cmd.Process.Kill()
+			go func(c *exec.Cmd) { c.Wait() }(worker.Cmd)
 		}
 	}
-
-	job.UpdateChunkState(task.ChunkID, task.Component, StateError)
-	m.LogToUI(fmt.Sprintf("❌ [%s] Daemon died unexpectedly on %s", task.Component, task.ChunkID))
 
 	m.mu.Lock()
 	m.CurrentRAMMB -= worker.ActualRamMB
@@ -475,6 +566,7 @@ func (m *MemoryManager) PruneExcessWorkers() {
 		if killAllIdle {
 			if w.Cmd != nil && w.Cmd.Process != nil {
 				w.Cmd.Process.Kill()
+				go func(c *exec.Cmd) { c.Wait() }(w.Cmd)
 			}
 			m.CurrentRAMMB -= w.ActualRamMB
 			logsToEmit = append(logsToEmit, fmt.Sprintf("🛑 [Auto-Scaler] Terminated %s daemon (Pipeline Idle).", w.Component))
@@ -485,6 +577,7 @@ func (m *MemoryManager) PruneExcessWorkers() {
 		if idleCounts[w.Component] > 1 {
 			if w.Cmd != nil && w.Cmd.Process != nil {
 				w.Cmd.Process.Kill()
+				go func(c *exec.Cmd) { c.Wait() }(w.Cmd)
 			}
 			m.CurrentRAMMB -= w.ActualRamMB
 			logsToEmit = append(logsToEmit, fmt.Sprintf("🧹 [Auto-Scaler] Terminated excess %s thread.", w.Component))

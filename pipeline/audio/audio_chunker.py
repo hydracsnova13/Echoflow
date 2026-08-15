@@ -17,7 +17,6 @@ def safe_rename(src, dst):
 def run_audio_chunker(input_path, output_workspace_dir):
     os.makedirs(output_workspace_dir, exist_ok=True)
 
-    # Resolve WAV file from the MetadataProfiler output directory
     wav_file = input_path
     if os.path.isdir(input_path):
         for f in os.listdir(input_path):
@@ -29,12 +28,10 @@ def run_audio_chunker(input_path, output_workspace_dir):
         print(f"[AudioChunker] ❌ Error: WAV file not found in {input_path}", flush=True)
         sys.exit(1)
 
-    # 1. Load Audio
     audio, sample_rate = sf.read(wav_file, dtype="float32")
     if audio.ndim == 2:
         audio = audio.mean(axis=1)
 
-    # 2. Resample to 16kHz
     target_rate = 16000
     if sample_rate != target_rate:
         duration = len(audio) / sample_rate
@@ -46,7 +43,6 @@ def run_audio_chunker(input_path, output_workspace_dir):
     total_samples = len(audio)
     total_seconds = total_samples / sample_rate
 
-    # 3. Deterministic 30-Second Chunking (1-second overlap)
     window_size = 30.0
     overlap = 1.0
     step = window_size - overlap
@@ -56,38 +52,30 @@ def run_audio_chunker(input_path, output_workspace_dir):
 
     while start_sec < total_seconds:
         end_sec = min(start_sec + window_size, total_seconds)
-        
-        # Format precisely to match video chunks (e.g., bucket_000_030, bucket_029_059)
         bucket_name = f"bucket_{int(start_sec):03d}_{int(end_sec):03d}"
         
         tmp_dir = os.path.join(output_workspace_dir, f".tmp_{bucket_name}")
         final_dir = os.path.join(output_workspace_dir, bucket_name)
         os.makedirs(tmp_dir, exist_ok=True)
 
-        # Slice waveform based on exact timestamps
         s_idx = int(start_sec * sample_rate)
         e_idx = int(end_sec * sample_rate)
         chunk_audio = audio[s_idx:e_idx]
 
-        # Write audio chunk & metadata
-        chunk_wav_path = os.path.join(tmp_dir, "chunk_audio.wav")
-        sf.write(chunk_wav_path, chunk_audio, sample_rate)
+        sf.write(os.path.join(tmp_dir, "chunk_audio.wav"), chunk_audio, sample_rate)
 
         meta = {"start": start_sec, "end": end_sec, "id": current_bucket_idx + 1}
         with open(os.path.join(tmp_dir, "meta.json"), "w") as f:
             json.dump(meta, f)
 
-        # Atomic rename to signal Go orchestrator that the chunk is ready
         safe_rename(tmp_dir, final_dir)
-        
         current_bucket_idx += 1
         start_sec += step
         
-        # Prevent infinite loops if end_sec hits the absolute end
         if end_sec >= total_seconds:
             break
 
-    print(f"[AudioChunker] ✅ Created {current_bucket_idx} audio buckets perfectly synced with video timeline.", flush=True)
+    print(f"[AudioChunker] ✅ Created {current_bucket_idx} audio buckets.", flush=True)
 
 if __name__ == "__main__":
     if len(sys.argv) >= 3:

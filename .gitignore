@@ -12,18 +12,20 @@ workspace/cache/*
 !workspace/cache/.gitkeep
 
 # ==========================================
-# 2. Python Environment & Caches
+# 2. Python Environments & Caches
 # ==========================================
-# Never commit the virtual environment (it relies on absolute OS paths)
+# 🛡️ NEW: Ignore the multi-environment directory
+.envs/
 .venv/
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
+.env
 
 # ==========================================
-# 3. AI Models (Too large for standard Git)
+# 3. AI Models & Submodules (Too large for Git)
 # ==========================================
 # Ignore heavy weights and HF snapshots. Commit only the registry config.
 models/*.onnx
@@ -32,7 +34,16 @@ models/*.pt
 models/*.bin
 models/whisper-small/
 models/nllb-200-distilled-600M/
+models/offline_mms_model/
+models/offline_openvoice/
+models/offline_pyannote_model/
+models/pyannote_segmentation/
 !models/registry.json
+
+# 🛡️ NEW: Ignore dynamically cloned repos and binary files
+wav2lip-onnx-256/
+bin/*.exe
+bin/*.zip
 
 # ==========================================
 # 4. Wails / Go / Frontend Build Artifacts

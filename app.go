@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"ecoflow/internal/broker"
@@ -106,14 +108,13 @@ func (a *App) GetRecentCheckpoints() ([]JobSummary, error) {
 	return jobs, nil
 }
 
-// 🛡️ THE FIX: Added targetLang to the frontend-to-backend signature
-func (a *App) SubmitJob(targetPath string, targetLang string) (string, error) {
+func (a *App) SubmitJob(targetPath string, targetLang string, targetOutFormat string, minSpeakers string, maxSpeakers string, subtitleMode string) (string, error) {
 	targetPath = strings.Trim(strings.TrimSpace(targetPath), "\"'")
 
 	if strings.HasPrefix(targetPath, "JOB-") {
 		errMsg := fmt.Sprintf("⚠️ Invalid Input: '%s' is an existing checkpoint ID.", targetPath)
 		a.MM.LogToUI(errMsg)
-		return "", fmt.Errorf("Please provide a valid absolute file path (.mp4), not a JOB- ID")
+		return "", fmt.Errorf("Please provide a valid absolute file path, not a JOB- ID")
 	}
 
 	a.MM.LogToUI(fmt.Sprintf("📥 Initiating Injection: %s", targetPath))
@@ -128,9 +129,23 @@ func (a *App) SubmitJob(targetPath string, targetLang string) (string, error) {
 	jobDir := filepath.Join(a.MM.ProjectRoot, "workspace", "jobs", jobID)
 	os.MkdirAll(jobDir, 0755)
 
-	// Save the selected language into the workspace so the NMT Daemon can read it mid-flight
+	ext := strings.ToLower(filepath.Ext(targetPath))
+	mediaType := "video"
+	if ext == ".wav" || ext == ".mp3" || ext == ".flac" || ext == ".m4a" || ext == ".aac" {
+		mediaType = "audio"
+	} else if ext == ".txt" || ext == ".json" || ext == ".srt" {
+		mediaType = "text"
+	}
+
 	configPath := filepath.Join(jobDir, "job_config.json")
-	configData := fmt.Sprintf(`{"target_language": "%s"}`, targetLang)
+	configData := fmt.Sprintf(`{
+		"target_language": "%s",
+		"media_type": "%s",
+		"output_format": "%s",
+		"min_speakers": "%s",
+		"max_speakers": "%s",
+		"subtitle_mode": "%s"
+	}`, targetLang, mediaType, targetOutFormat, minSpeakers, maxSpeakers, subtitleMode)
 	os.WriteFile(configPath, []byte(configData), 0644)
 
 	fileName := filepath.Base(targetPath)
@@ -148,10 +163,13 @@ func (a *App) SubmitJob(targetPath string, targetLang string) (string, error) {
 	}
 	defer dst.Close()
 
-	io.Copy(dst, src)
+	_, err = io.Copy(dst, src)
+	if err != nil {
+		return "", fmt.Errorf("failed to copy file: %v", err)
+	}
 
 	a.MM.Checkpoints.InitializeJob(jobID, destPath, filepath.Join(a.MM.ProjectRoot, "workspace"))
-	a.MM.LogToUI(fmt.Sprintf("✅ Job %s safely created (Target Language: %s)!", jobID, targetLang))
+	a.MM.LogToUI(fmt.Sprintf("✅ Job %s safely created! Input: [%s] -> Output: [%s]", jobID, strings.ToUpper(mediaType), strings.ToUpper(targetOutFormat)))
 
 	go a.DAG.EvaluateJob(jobID)
 	return jobID, nil
@@ -215,4 +233,47 @@ func (a *App) ResumeJob(jobID string) error {
 	go a.DAG.EvaluateJob(jobID)
 	a.MM.LogToUI(fmt.Sprintf("✅ Job %s resumed. Retrying failed tasks and re-queuing.", jobID))
 	return nil
+}
+
+var mediaServerOnce sync.Once
+
+func (a *App) GetJobOutputPath(jobID string) map[string]string {
+	// Start a lightweight local file server on port 9999 for the Wails UI to stream from
+	mediaServerOnce.Do(func() {
+		workspaceDir := filepath.Join(a.MM.ProjectRoot, "workspace", "jobs")
+		http.Handle("/media/", http.StripPrefix("/media/", http.FileServer(http.Dir(workspaceDir))))
+		go func() {
+			fmt.Println("🎬 Local Media Server started on http://localhost:9999")
+			http.ListenAndServe(":9999", nil)
+		}()
+	})
+
+	res := map[string]string{"Path": "", "Format": "", "Content": "", "Error": ""}
+	outDir := filepath.Join(a.MM.ProjectRoot, "workspace", "jobs", jobID, "out_MediaCompositor")
+
+	entries, err := os.ReadDir(outDir)
+	if err != nil {
+		res["Error"] = "Output directory not found"
+		return res
+	}
+
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "final_recomposed") {
+			absPath := filepath.Join(outDir, e.Name())
+			ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(e.Name()), "."))
+
+			// Return a standard HTTP URL instead of a blocked file:/// path
+			res["Path"] = fmt.Sprintf("http://localhost:9999/media/%s/out_MediaCompositor/%s", jobID, e.Name())
+			res["Format"] = ext
+
+			// If it's a text format, read the actual text content to display in the UI
+			if ext == "srt" || ext == "txt" || ext == "json" {
+				bytes, _ := os.ReadFile(absPath)
+				res["Content"] = string(bytes)
+			}
+			return res
+		}
+	}
+	res["Error"] = "Final media not found"
+	return res
 }

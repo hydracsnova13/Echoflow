@@ -11,7 +11,7 @@ os.environ["OPENCV_LOG_LEVEL"] = "OFF"
 MOUTH_INDICES = [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 409, 270, 269, 267, 0, 37, 39, 40, 185, 78, 95, 88, 178, 87, 14, 317, 402, 318, 324, 308, 415, 310, 311, 312, 13, 82, 81, 80, 191]
 
 def send_ipc(data):
-    print(f"ECOFLOW_IPC__{json.dumps(data)}", flush=True)
+    print(f"ECHOFLOW_IPC__{json.dumps(data)}", flush=True)
 
 def reader_thread(q):
     for line in iter(sys.stdin.readline, ''):

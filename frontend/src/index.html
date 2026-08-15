@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>EcoFlow DAG Governor</title>
+    <title>Echoflow DAG Governor</title>
     <style>
         :root { 
             --bg-base: #09090b;       
@@ -70,12 +70,20 @@
 
         .tech-view { display: flex; flex-direction: column; gap: 15px; flex-grow: 1; min-height: 0; }
         .top-row { display: grid; grid-template-columns: 2.5fr 1fr 1.5fr; gap: 15px; flex-shrink: 0; }
-        .gateway-group { display: flex; gap: 8px; align-items: center; width: 100%; }
+        
+        .gateway-container { display: flex; flex-direction: column; gap: 12px; width: 100%; }
+        .gateway-controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; width: 100%; }
+        
         input[type="text"] { flex-grow: 1; padding: 10px 14px; background: var(--bg-base); border: 1px solid var(--border-glow); color: white; border-radius: 6px; font-family: monospace; font-size: 0.85rem;}
         input[type="text"]:focus { outline: none; border-color: var(--accent); }
         
+        input[type="number"] { padding: 9px 12px; background: var(--bg-base); border: 1px solid var(--border-glow); color: white; border-radius: 6px; font-family: monospace; font-size: 0.85rem; outline: none; transition: border-color 0.2s ease;}
+        input[type="number"]:focus { border-color: var(--accent); }
+        input[type="number"]:disabled { opacity: 0.5; cursor: not-allowed; border-color: var(--border-dim); }
+
         select { padding: 10px; background: var(--bg-base); border: 1px solid var(--border-glow); color: white; border-radius: 6px; font-weight: 600; font-size: 0.85rem; outline: none; cursor: pointer; }
         select:focus { border-color: var(--accent); }
+        select:disabled { opacity: 0.5; cursor: not-allowed; border-color: var(--border-dim); }
         select option:disabled { color: #ef4444; font-style: italic; background: rgba(239, 68, 68, 0.1);}
 
         button { padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 0.85rem; transition: all 0.2s; color: white;}
@@ -100,7 +108,7 @@
         .dag-container { padding: 20px; overflow: auto; height: 100%; width: 100%; }
         .sys-node { background: var(--bg-base); border: 1px dashed var(--border-glow); border-radius: 6px; padding: 8px 12px; font-weight: bold; color: var(--text-muted); font-size: 0.75rem; letter-spacing: 0.05em; flex-shrink: 0;}
         .sys-node.active { border: 1px solid var(--success); color: var(--success); background: var(--success-dim);}
-        .dag-node { background: var(--bg-base); border: 1px solid var(--border-dim); border-radius: 8px; padding: 10px 12px; width: 150px; flex-shrink: 0; transition: all 0.3s ease; display: flex; flex-direction: column; gap: 6px;}
+        .dag-node { background: var(--bg-base); border: 1px solid var(--border-dim); border-radius: 8px; padding: 10px 12px; width: 160px; flex-shrink: 0; transition: all 0.3s ease; display: flex; flex-direction: column; gap: 6px;}
         .dag-node.active { border-color: var(--accent); background: var(--bg-card); box-shadow: 0 0 10px rgba(59, 130, 246, 0.2); } 
         .dag-node.done { border-color: var(--border-dim); opacity: 0.5;} 
         .node-header { font-weight: 700; font-size: 0.75rem; display: flex; align-items: center; gap: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;}
@@ -122,7 +130,7 @@
         tr:hover { background: rgba(255,255,255,0.02); }
         .status-idle { color: var(--text-muted); font-size: 0.75rem; font-style: italic;}
         
-        .logs { font-size: 0.7rem; color: var(--text-muted); line-height: 1.6; font-family: 'Consolas', monospace; padding: 10px;}
+        .logs { font-size: 0.7rem; color: var(--text-muted); line-height: 1.6; font-family: 'Consolas', monospace; padding: 10px; overflow-y: auto; height: 100%;}
         .log-line { padding: 2px 0; border-bottom: 1px solid rgba(255,255,255,0.02); word-break: break-all;}
         .log-success { color: var(--success); }
         .log-error { color: var(--danger); }
@@ -136,18 +144,18 @@
         .job-card-header { display: flex; justify-content: space-between; font-size: 0.7rem; font-family: monospace; margin-bottom: 6px; font-weight: bold;}
         .job-status-badge { font-size: 0.6rem; padding: 2px 6px; border-radius: 10px; background: var(--border-dim); color: white; font-weight: bold;}
         .job-status-badge.running { background: var(--accent-dim); color: var(--accent); border: 1px solid var(--accent);}
-        .job-status-badge.stopped, .job-status-badge.paused { background: rgba(245, 158, 11, 0.15); color: var(--warning); border: 1px solid var(--warning);}
+        .job-status-badge.stopped, .job-status-badge.paused, .job-status-badge.error { background: rgba(245, 158, 11, 0.15); color: var(--warning); border: 1px solid var(--warning);}
         .job-status-badge.done, .job-status-badge.completed { background: var(--success-dim); color: var(--success); border: 1px solid var(--success);}
 
-        .operator-view { display: none; flex-direction: column; gap: 20px; flex-grow: 1; justify-content: center; max-width: 1000px; margin: 0 auto; width: 100%;}
-        .op-hero { text-align: center; margin-bottom: 20px;}
+        .operator-view { display: none; flex-direction: column; gap: 20px; flex-grow: 1; overflow-y: auto; max-width: 1100px; margin: 0 auto; width: 100%; padding-right: 10px;}
+        .op-hero { text-align: center; margin-bottom: 10px; margin-top: 10px;}
         .op-title { font-size: 2rem; font-weight: 700; margin-bottom: 8px; color: var(--text-main);}
         .op-subtitle { font-size: 0.9rem; color: var(--text-muted);}
-        .op-kpi-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-bottom: 30px;}
-        .op-kpi-card { background: var(--bg-card); border: 1px solid var(--border-dim); border-radius: 12px; padding: 25px; text-align: center; box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);}
-        .op-kpi-val { font-size: 3rem; font-weight: 800; color: var(--accent); font-family: monospace; line-height: 1; margin-bottom: 10px;}
-        .op-kpi-label { font-size: 0.85rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em;}
-        .op-pipeline { display: flex; align-items: center; justify-content: space-between; background: var(--bg-card); padding: 30px 50px; border-radius: 12px; border: 1px solid var(--border-dim);}
+        .op-kpi-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-bottom: 20px;}
+        .op-kpi-card { background: var(--bg-card); border: 1px solid var(--border-dim); border-radius: 12px; padding: 20px; text-align: center; box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);}
+        .op-kpi-val { font-size: 2.5rem; font-weight: 800; color: var(--accent); font-family: monospace; line-height: 1; margin-bottom: 8px;}
+        .op-kpi-label { font-size: 0.75rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em;}
+        .op-pipeline { display: flex; align-items: center; justify-content: space-between; background: var(--bg-card); padding: 25px 40px; border-radius: 12px; border: 1px solid var(--border-dim);}
         .op-step { display: flex; flex-direction: column; align-items: center; gap: 10px; width: 120px; text-align: center;}
         .op-icon { width: 50px; height: 50px; border-radius: 50%; background: var(--bg-base); border: 2px solid var(--border-glow); display: flex; align-items: center; justify-content: center; font-size: 1.5rem; transition: all 0.3s;}
         .op-step.active .op-icon { border-color: var(--accent); background: var(--accent-dim); box-shadow: 0 0 15px rgba(59,130,246,0.3);}
@@ -157,6 +165,22 @@
         .op-line { flex-grow: 1; height: 2px; background: var(--border-glow); margin: 0 20px; position: relative; top: -15px;}
         .op-line.active { background: var(--accent); }
 
+        .op-media-player { 
+            display: none; 
+            flex-direction: column; 
+            align-items: center; 
+            margin-top: 10px; 
+            margin-bottom: 30px;
+            background: #000; 
+            padding: 20px; 
+            border-radius: 12px; 
+            border: 1px solid var(--border-dim); 
+            box-shadow: 0 10px 25px rgba(0,0,0,0.5); 
+        }
+        .op-media-header { font-weight: 700; margin-bottom: 15px; color: var(--success); font-size: 1.1rem; letter-spacing: 0.05em; text-align: center;}
+        #mediaContainer { width: 100%; display: flex; justify-content: center; }
+        #mediaContainer video { max-height: 50vh; width: auto; max-width: 100%; border-radius: 8px; border: 1px solid var(--border-dim); box-shadow: 0 0 20px rgba(0,0,0,0.8); }
+        
         body.mode-operator .tech-view { display: none !important; }
         body.mode-operator .operator-view { display: flex !important; }
         body.mode-tech .operator-view { display: none !important; }
@@ -165,7 +189,7 @@
 </head>
 <body id="appBody" class="mode-tech">
     <div class="header">
-        <h1><span>EcoFlow</span> Platform Governor</h1>
+        <h1><span>Echoflow</span> Platform Governor</h1>
         <div class="toggle-container">
             <span style="color: var(--accent);">Architect (Tech)</span>
             <label class="switch">
@@ -176,7 +200,6 @@
         </div>
     </div>
 
-    <!-- OPERATOR VIEW -->
     <div class="operator-view">
         <div class="op-hero">
             <div class="op-title" id="opStatusTitle">System Ready</div>
@@ -186,16 +209,55 @@
         <div class="op-controls-wrapper" style="display: flex; gap: 20px; margin-bottom: 20px;">
             <div class="op-kpi-card" style="flex: 2; padding: 20px; text-align: left;">
                 <div class="op-kpi-label" style="margin-bottom: 12px;">Job Injection Gateway</div>
-                <div class="gateway-group">
-                    <input type="text" id="targetPathOp" placeholder="Provide absolute file path (.mp4)" oninput="syncInputs()">
-                    <select id="targetLangOp" onchange="syncInputs()">
-                        <option value="en">English (en)</option>
-                        <option value="hi" selected>Hindi (hi)</option>
-                        <option value="mr">Marathi (mr)</option>
-                    </select>
-                    <button class="btn-exec" onclick="submitJob()">Execute</button>
-                    <button class="btn-stop" onclick="stopJob()">Stop</button>
-                    <button class="btn-resume" onclick="resumeJob()">Resume</button>
+                <div class="gateway-container">
+                    <input type="text" id="targetPathOp" placeholder="Absolute Input Path (.mp4, .wav, .txt)" oninput="syncInputs()">
+                    
+                    <div class="gateway-controls">
+                        <select id="targetOutFormatOp" onchange="syncInputs()">
+                            <optgroup label="Video Formats">
+                                <option value="mp4" selected>Video (.mp4)</option>
+                                <option value="mov">Video (.mov)</option>
+                                <option value="mkv">Video (.mkv)</option>
+                                <option value="avi">Video (.avi)</option>
+                                <option value="webm">Video (.webm)</option>
+                                <option value="flv">Video (.flv)</option>
+                                <option value="wmv">Video (.wmv)</option>
+                            </optgroup>
+                            <optgroup label="Audio Formats">
+                                <option value="wav">Audio (.wav)</option>
+                                <option value="mp3">Audio (.mp3)</option>
+                                <option value="flac">Audio (.flac)</option>
+                                <option value="aac">Audio (.aac)</option>
+                                <option value="ogg">Audio (.ogg)</option>
+                                <option value="wma">Audio (.wma)</option>
+                            </optgroup>
+                            <optgroup label="Text Formats">
+                                <option value="srt">Subtitles (.srt)</option>
+                                <option value="txt">Transcript (.txt)</option>
+                            </optgroup>
+                        </select>
+
+                        <select id="targetLangOp" onchange="syncInputs()">
+                            <option value="en">Eng (en)</option>
+                            <option value="hi" selected>Hin (hi)</option>
+                            <option value="mr">Mar (mr)</option>
+                        </select>
+                        
+                        <select id="subtitleModeOp" onchange="syncInputs()">
+                            <option value="none" selected>No Subtitles</option>
+                            <option value="target">Burn Target Subtitles</option>
+                            <option value="source">Burn Source Subtitles</option>
+                        </select>
+                        
+                        <input type="number" id="minSpkOp" placeholder="Min Spk" min="1" max="20" style="width: 90px; display: none;" title="Minimum Speakers" oninput="syncInputs()">
+                        <input type="number" id="maxSpkOp" placeholder="Max Spk" min="1" max="20" style="width: 90px; display: none;" title="Maximum Speakers" oninput="syncInputs()">
+                        
+                        <div style="flex-grow: 1;"></div>
+                        
+                        <button class="btn-exec" onclick="submitJob()">Execute</button>
+                        <button class="btn-stop" onclick="stopJob()">Stop</button>
+                        <button class="btn-resume" onclick="resumeJob()">Resume</button>
+                    </div>
                 </div>
             </div>
             <div class="op-kpi-card" style="flex: 1; padding: 20px; text-align: left;">
@@ -211,6 +273,7 @@
             <div class="op-kpi-card"><div class="op-kpi-val" id="opAgents">0</div><div class="op-kpi-label">Active AI Agents</div></div>
             <div class="op-kpi-card"><div class="op-kpi-val" id="opHealth" style="color: var(--success);">100%</div><div class="op-kpi-label">System Health (RAM)</div></div>
         </div>
+        
         <div class="op-pipeline">
             <div class="op-step" id="opStep1"><div class="op-icon">📥</div><div class="op-step-label">Ingestion</div></div>
             <div class="op-line" id="opLine1"></div>
@@ -218,24 +281,67 @@
             <div class="op-line" id="opLine2"></div>
             <div class="op-step" id="opStep3"><div class="op-icon">✅</div><div class="op-step-label">Ready for Output</div></div>
         </div>
+
+        <div class="op-media-player" id="opMediaPlayer">
+            <div class="op-media-header">✨ Final Media Rendered Successfully ✨</div>
+            <div id="mediaContainer"></div>
+        </div>
     </div>
 
-    <!-- TECH VIEW -->
     <div class="tech-view">
         <div class="top-row">
             <div class="card">
                 <div class="card-header">Job Injection Gateway</div>
                 <div class="card-body" style="display: flex; align-items: center;">
-                    <div class="gateway-group">
-                        <input type="text" id="targetPath" placeholder="Provide absolute file path (.mp4)" oninput="syncInputs()">
-                        <select id="targetLang" onchange="syncInputs()">
-                            <option value="en">English (en)</option>
-                            <option value="hi" selected>Hindi (hi)</option>
-                            <option value="mr">Marathi (mr)</option>
-                        </select>
-                        <button class="btn-exec" onclick="submitJob()">Execute</button>
-                        <button class="btn-stop" onclick="stopJob()">Stop</button>
-                        <button class="btn-resume" onclick="resumeJob()">Resume</button>
+                    <div class="gateway-container">
+                        <input type="text" id="targetPath" placeholder="Absolute Input Path (.mp4, .wav, .txt)" oninput="syncInputs()">
+                        
+                        <div class="gateway-controls">
+                            <select id="targetOutFormat" onchange="syncInputs()">
+                                <optgroup label="Video Formats">
+                                    <option value="mp4" selected>Video (.mp4)</option>
+                                    <option value="mov">Video (.mov)</option>
+                                    <option value="mkv">Video (.mkv)</option>
+                                    <option value="avi">Video (.avi)</option>
+                                    <option value="webm">Video (.webm)</option>
+                                    <option value="flv">Video (.flv)</option>
+                                    <option value="wmv">Video (.wmv)</option>
+                                </optgroup>
+                                <optgroup label="Audio Formats">
+                                    <option value="wav">Audio (.wav)</option>
+                                    <option value="mp3">Audio (.mp3)</option>
+                                    <option value="flac">Audio (.flac)</option>
+                                    <option value="aac">Audio (.aac)</option>
+                                    <option value="ogg">Audio (.ogg)</option>
+                                    <option value="wma">Audio (.wma)</option>
+                                </optgroup>
+                                <optgroup label="Text Formats">
+                                    <option value="srt">Subtitles (.srt)</option>
+                                    <option value="txt">Transcript (.txt)</option>
+                                </optgroup>
+                            </select>
+
+                            <select id="targetLang" onchange="syncInputs()">
+                                <option value="en">Eng (en)</option>
+                                <option value="hi" selected>Hin (hi)</option>
+                                <option value="mr">Mar (mr)</option>
+                            </select>
+
+                            <select id="subtitleMode" onchange="syncInputs()">
+                                <option value="none" selected>No Subtitles</option>
+                                <option value="target">Burn Target Subtitles</option>
+                                <option value="source">Burn Source Subtitles</option>
+                            </select>
+
+                            <input type="number" id="minSpk" placeholder="Min Spk" min="1" max="20" style="width: 90px; display: none;" title="Minimum Speakers" oninput="syncInputs()">
+                            <input type="number" id="maxSpk" placeholder="Max Spk" min="1" max="20" style="width: 90px; display: none;" title="Maximum Speakers" oninput="syncInputs()">
+                            
+                            <div style="flex-grow: 1;"></div>
+                            
+                            <button class="btn-exec" onclick="submitJob()">Execute</button>
+                            <button class="btn-stop" onclick="stopJob()">Stop</button>
+                            <button class="btn-resume" onclick="resumeJob()">Resume</button>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -291,32 +397,151 @@
     <script>
         let currentJobId = null;
         let dynamicComps = [];
+        let pipelineManifest = {}; 
+        let currentRenderedJob = null; 
 
         function toggleMode() {
             document.getElementById('appBody').className = document.getElementById('modeSwitch').checked ? 'mode-operator' : 'mode-tech';
         }
 
+        // 🛡️ THE FIX: Dynamically hides the subtitle box based on output selection
+        function applyRegexRules(rawPath) {
+            let cleanPath = rawPath.replace(/['"]/g, '').trim();
+            let selects = [document.getElementById('targetOutFormat'), document.getElementById('targetOutFormatOp')];
+            let extMatch = cleanPath.match(/\.([a-zA-Z0-9]+)$/);
+            let ext = extMatch ? extMatch[1].toLowerCase() : '';
+            
+            let audioExts = ['wav', 'mp3', 'flac', 'm4a', 'aac', 'wma', 'ogg'];
+            let videoExts = ['mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'webm'];
+            let textExts = ['txt', 'json', 'srt'];
+
+            let isAudio = audioExts.includes(ext);
+            let isVideo = videoExts.includes(ext);
+            let isText = textExts.includes(ext);
+
+            let showSpk = (isAudio || isVideo) ? 'inline-block' : 'none';
+            document.querySelectorAll('#minSpk, #maxSpk, #minSpkOp, #maxSpkOp').forEach(el => {
+                if(el) el.style.display = showSpk;
+            });
+
+            selects.forEach(select => {
+                if(!select) return;
+                let options = select.options;
+                
+                for(let i=0; i<options.length; i++) {
+                    let opt = options[i];
+                    let val = opt.value;
+                    let optIsVideo = videoExts.includes(val);
+                    let optIsAudio = audioExts.includes(val);
+                    let optIsText = textExts.includes(val);
+
+                    if (isVideo) {
+                        opt.disabled = !optIsVideo; 
+                    } else if (isAudio) {
+                        opt.disabled = optIsVideo; 
+                    } else if (isText) {
+                        opt.disabled = !optIsText; 
+                    } else {
+                        opt.disabled = false;
+                    }
+                }
+                
+                let currentOpt = select.options[select.selectedIndex];
+                if (currentOpt && currentOpt.disabled) {
+                    if (isText) select.value = 'srt';
+                    else if (isAudio) select.value = 'wav';
+                    else if (isVideo) select.value = 'mp4';
+                }
+            });
+
+            // 🛡️ Ensure subtitle box only appears for Video Outputs
+            const isOp = document.getElementById('modeSwitch') ? document.getElementById('modeSwitch').checked : false;
+            const currentOutFormat = isOp ? 
+                document.getElementById('targetOutFormatOp').value : 
+                document.getElementById('targetOutFormat').value;
+                
+            let isOutputVideo = videoExts.includes(currentOutFormat);
+            let showSub = isOutputVideo ? 'inline-block' : 'none';
+            
+            let subSelects = [document.getElementById('subtitleMode'), document.getElementById('subtitleModeOp')];
+            subSelects.forEach(sel => {
+                if(!sel) return;
+                sel.style.display = showSub;
+                if (!isOutputVideo) {
+                    sel.value = 'none';
+                }
+            });
+        }
+
         function syncInputs() {
             const isOp = document.getElementById('modeSwitch').checked;
-            const path = isOp ? document.getElementById('targetPathOp').value : document.getElementById('targetPath').value;
+            const rawPath = isOp ? document.getElementById('targetPathOp').value : document.getElementById('targetPath').value;
             const lang = isOp ? document.getElementById('targetLangOp').value : document.getElementById('targetLang').value;
+            const outFormat = isOp ? document.getElementById('targetOutFormatOp').value : document.getElementById('targetOutFormat').value;
+            const minS = isOp ? document.getElementById('minSpkOp').value : document.getElementById('minSpk').value;
+            const maxS = isOp ? document.getElementById('maxSpkOp').value : document.getElementById('maxSpk').value;
+            const subMode = isOp ? document.getElementById('subtitleModeOp').value : document.getElementById('subtitleMode').value;
             
-            document.getElementById('targetPath').value = path;
-            document.getElementById('targetPathOp').value = path;
+            document.getElementById('targetPath').value = rawPath;
+            document.getElementById('targetPathOp').value = rawPath;
             document.getElementById('targetLang').value = lang;
             document.getElementById('targetLangOp').value = lang;
+            document.getElementById('targetOutFormat').value = outFormat;
+            document.getElementById('targetOutFormatOp').value = outFormat;
+            
+            if (document.getElementById('minSpk')) document.getElementById('minSpk').value = minS;
+            if (document.getElementById('minSpkOp')) document.getElementById('minSpkOp').value = minS;
+            if (document.getElementById('maxSpk')) document.getElementById('maxSpk').value = maxS;
+            if (document.getElementById('maxSpkOp')) document.getElementById('maxSpkOp').value = maxS;
+            
+            if (document.getElementById('subtitleMode')) document.getElementById('subtitleMode').value = subMode;
+            if (document.getElementById('subtitleModeOp')) document.getElementById('subtitleModeOp').value = subMode;
 
-            if (!path.startsWith("JOB-") && path.length > 0) {
+            let cleanPath = rawPath.replace(/['"]/g, '').trim();
+            applyRegexRules(cleanPath);
+
+            if (!cleanPath.startsWith("JOB-") && cleanPath !== currentJobId) {
+                currentJobId = null;
                 updateButtonStates('idle');
+                document.querySelectorAll('.sys-node, .dag-node, .op-step').forEach(el => el.classList.remove('active', 'done'));
+                document.querySelectorAll('.dag-edge, .op-line').forEach(el => el.classList.remove('active'));
+                document.getElementById("opStatusTitle").innerText = "System Ready";
+                document.getElementById("opStatusTitle").style.color = "var(--text-main)";
+                document.getElementById("opMediaPlayer").style.display = "none";
+                currentRenderedJob = null;
+            }
+
+            if (cleanPath.startsWith("JOB-")) {
+                let dropdowns = ['targetLang', 'targetLangOp', 'targetOutFormat', 'targetOutFormatOp', 'minSpk', 'maxSpk', 'minSpkOp', 'maxSpkOp', 'subtitleMode', 'subtitleModeOp'];
+                dropdowns.forEach(id => {
+                    let el = document.getElementById(id);
+                    if(el) el.disabled = true;
+                });
+            } else {
+                let dropdowns = ['targetLang', 'targetLangOp', 'targetOutFormat', 'targetOutFormatOp', 'minSpk', 'maxSpk', 'minSpkOp', 'maxSpkOp', 'subtitleMode', 'subtitleModeOp'];
+                dropdowns.forEach(id => {
+                    let el = document.getElementById(id);
+                    if(el) el.disabled = false;
+                });
             }
         }
 
         function updateButtonStates(state) {
+            let isRunning = (state === 'running' || state === 'paused');
+            let isCompleted = (state === 'completed');
+            
+            let dropdowns = ['targetLang', 'targetLangOp', 'targetOutFormat', 'targetOutFormatOp', 'minSpk', 'maxSpk', 'minSpkOp', 'maxSpkOp', 'subtitleMode', 'subtitleModeOp'];
+            dropdowns.forEach(id => {
+                let el = document.getElementById(id);
+                if(el) el.disabled = (isRunning || isCompleted);
+            });
+
             document.querySelectorAll('.btn-exec').forEach(btn => {
                 if (state === 'idle') {
                     btn.style.display = 'block';
                     btn.disabled = false;
                     btn.innerText = 'Execute';
+                    btn.className = 'btn-exec';
                 } else if (state === 'completed') {
                     btn.style.display = 'block';
                     btn.disabled = true;
@@ -329,10 +554,37 @@
             document.querySelectorAll('.btn-resume').forEach(btn => btn.style.display = state === 'paused' ? 'block' : 'none');
         }
 
+        async function renderMediaPlayer(jobId) {
+            if (currentRenderedJob === jobId) return;
+            
+            let res = await window.go.main.App.GetJobOutputPath(jobId);
+            let container = document.getElementById("opMediaPlayer");
+            let mediaBox = document.getElementById("mediaContainer");
+            
+            if (res.Error) {
+                container.style.display = "none";
+                return;
+            }
+            
+            currentRenderedJob = jobId;
+            container.style.display = "flex";
+            
+            let pathUri = res.Path + "?t=" + new Date().getTime();
+            
+            if (['mp4', 'mkv', 'webm', 'mov', 'avi'].includes(res.Format)) {
+                mediaBox.innerHTML = `<video src="${pathUri}" controls autoplay style="width: 100%; max-height: 50vh; border-radius: 8px; border: 1px solid var(--border-dim); box-shadow: 0 0 20px rgba(0,0,0,0.8);"></video>`;
+            } else if (['wav', 'mp3', 'aac', 'flac', 'ogg'].includes(res.Format)) {
+                mediaBox.innerHTML = `<audio src="${pathUri}" controls autoplay style="width: 100%; margin-top: 10px;"></audio>`;
+            } else {
+                mediaBox.innerHTML = `<textarea readonly style="width: 100%; height: 350px; background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border-glow); border-radius: 8px; padding: 15px; font-family: monospace; font-size: 0.8rem; resize: none;">${res.Content}</textarea>`;
+            }
+        }
+
         function selectJob(id, status) {
             currentJobId = id;
             document.getElementById('targetPath').value = id;
             document.getElementById('targetPathOp').value = id;
+            syncInputs();
 
             let upperStatus = status.toUpperCase();
             if (upperStatus === "RUNNING") {
@@ -340,9 +592,11 @@
                 document.getElementById("opStatusTitle").innerText = "Processing Active";
                 document.getElementById("opStatusTitle").style.color = "var(--accent)";
                 document.getElementById("opStep2").className = "op-step active";
-            } else if (upperStatus === "STOPPED" || upperStatus === "PAUSED") {
+                document.getElementById("opMediaPlayer").style.display = "none";
+                currentRenderedJob = null;
+            } else if (upperStatus === "STOPPED" || upperStatus === "PAUSED" || upperStatus === "ERROR") {
                 updateButtonStates('paused');
-                document.getElementById("opStatusTitle").innerText = "Processing Paused";
+                document.getElementById("opStatusTitle").innerText = "Processing Paused / Error";
                 document.getElementById("opStatusTitle").style.color = "var(--warning)";
                 document.getElementById("opStep2").className = "op-step";
             } else if (upperStatus === "DONE" || upperStatus === "COMPLETED") {
@@ -351,75 +605,87 @@
                 document.getElementById("opStatusTitle").style.color = "var(--success)";
                 document.getElementById("opStep2").className = "op-step done";
                 document.getElementById("opStep3").className = "op-step done";
+                renderMediaPlayer(id); 
             }
         }
 
         async function buildDAG() {
             try {
-                const manifest = await window.go.main.App.GetPipelineManifest();
-                dynamicComps = Object.keys(manifest);
+                pipelineManifest = await window.go.main.App.GetPipelineManifest();
+                dynamicComps = Object.keys(pipelineManifest);
 
                 function buildNode(comp) {
-                    let meta = manifest[comp];
+                    let meta = pipelineManifest[comp];
                     let isSeq = meta.execution_mode === "sequential";
                     let html = `<div class="dag-node" id="node-${comp}">
                                     <div class="node-header"><div class="node-status-dot"></div> ${comp}</div>`;
+                    
+                    html += `<div class="node-metrics">
+                                <div class="metric-row"><span>Q:</span><span id="q-${comp}">0</span></div>
+                                <div class="metric-row"><span>T:</span><span id="d-${comp}">0</span></div>
+                                <div class="metric-row"><span>R:</span><span id="r-${comp}">0 MB</span></div>
+                             </div>`;
+                    
                     if (isSeq) {
                         html += `<div class="cpu-badge">${(meta.domain + " " + meta.execution_mode).toUpperCase()}</div>`;
-                    } else {
-                        html += `<div class="node-metrics">
-                                    <div class="metric-row"><span>Q:</span><span id="q-${comp}">0</span></div>
-                                    <div class="metric-row"><span>T:</span><span id="d-${comp}">0</span></div>
-                                    <div class="metric-row"><span>R:</span><span id="r-${comp}">0 MB</span></div>
-                                 </div>`;
                     }
                     html += `<div id="prog-${comp}" class="prog-container"></div></div>`;
                     return html;
                 }
 
-                function buildTree(nodeId) {
-                    let children = dynamicComps.filter(k => manifest[k].depends_on && manifest[k].depends_on.includes(nodeId));
-                    let nodeHtml = buildNode(nodeId);
-                    
-                    if (children.length === 0) {
-                        return nodeHtml;
+                let levels = {};
+                let queue = [];
+                
+                dynamicComps.forEach(c => {
+                    if (!pipelineManifest[c].depends_on || pipelineManifest[c].depends_on.length === 0) {
+                        levels[c] = 0;
+                        queue.push(c);
                     }
-                    
-                    if (children.length === 1) {
-                        return `<div style="display: flex; align-items: center;">
-                                    ${nodeHtml}
-                                    <div class="dag-edge" style="margin: 0 15px;">➔</div>
-                                    ${buildTree(children[0])}
-                                </div>`;
-                    }
-                    
-                    let childrenHtml = children.map(child => 
-                        `<div style="display: flex; align-items: center; position: relative; padding: 10px 0;">
-                            <div style="width: 20px; height: 2px; background: var(--border-glow);"></div>
-                            <div class="dag-edge" style="margin: 0 10px 0 5px;">➔</div>
-                            ${buildTree(child)}
-                         </div>`
-                    ).join('');
-                    
-                    return `<div style="display: flex; align-items: center;">
-                                ${nodeHtml}
-                                <div style="display: flex; flex-direction: column; justify-content: center; border-left: 2px dashed var(--border-glow); margin-left: 15px;">
-                                    ${childrenHtml}
-                                </div>
-                            </div>`;
+                });
+
+                while(queue.length > 0) {
+                    let curr = queue.shift();
+                    dynamicComps.forEach(c => {
+                        if (pipelineManifest[c].depends_on && pipelineManifest[c].depends_on.includes(curr)) {
+                            let nextLvl = levels[curr] + 1;
+                            if (levels[c] === undefined || levels[c] < nextLvl) {
+                                levels[c] = nextLvl;
+                                queue.push(c);
+                            }
+                        }
+                    });
                 }
 
-                let root = dynamicComps.find(k => !manifest[k].depends_on || manifest[k].depends_on.length === 0);
+                let maxLvl = 0;
+                let layers = {};
+                Object.keys(levels).forEach(c => {
+                    let lvl = levels[c];
+                    if (!layers[lvl]) layers[lvl] = [];
+                    layers[lvl].push(c);
+                    if (lvl > maxLvl) maxLvl = lvl;
+                });
 
-                let html = `
-                    <div style="display: flex; align-items: center; width: max-content;">
-                        <div class="sys-node" id="node-START">INGEST</div>
-                        <div class="dag-edge" style="margin: 0 15px;">➔</div>
-                        ${root ? buildTree(root) : ''}
-                        <div class="dag-edge" style="margin: 0 15px;">➔</div>
-                        <div class="sys-node" id="node-END">OUT</div>
-                    </div>
-                `;
+                let html = `<div style="display: flex; flex-direction: row; align-items: center; width: max-content; padding: 10px 20px;">`;
+                html += `<div class="sys-node" id="node-START">INGEST</div>`;
+                html += `<div class="dag-edge" style="margin: 0 15px;">➔</div>`;
+                
+                for (let i = 0; i <= maxLvl; i++) {
+                    if (!layers[i]) continue;
+                    
+                    html += `<div style="display: flex; flex-direction: column; gap: 25px; justify-content: center;">`;
+                    layers[i].forEach(comp => {
+                        html += buildNode(comp);
+                    });
+                    html += `</div>`;
+                    
+                    if (i < maxLvl) {
+                        html += `<div class="dag-edge" style="margin: 0 15px;">➔</div>`;
+                    }
+                }
+                
+                html += `<div class="dag-edge" style="margin: 0 15px;">➔</div>`;
+                html += `<div class="sys-node" id="node-END">OUT</div></div>`;
+                
                 document.getElementById('dynamicDagContainer').innerHTML = html;
             } catch (e) { console.error(e); }
         }
@@ -446,9 +712,17 @@
                         </div>
                     </div>`;
                     
-                    if (currentJobId === job.id && (job.status === "DONE" || job.status === "COMPLETED")) {
-                        let stopBtnVisible = document.querySelector('.btn-stop').style.display === 'block';
-                        if (stopBtnVisible) {
+                    let cleanInput = document.getElementById('targetPath').value.replace(/['"]/g, '').trim();
+                    if (currentJobId === job.id && (cleanInput === currentJobId || cleanInput.startsWith("JOB-"))) {
+                        let upperStatus = job.status.toUpperCase();
+                        
+                        if (upperStatus === "PAUSED" || upperStatus === "STOPPED" || upperStatus === "ERROR") {
+                            updateButtonStates('paused');
+                            document.getElementById("opStatusTitle").innerText = "Processing Paused / Error";
+                            document.getElementById("opStatusTitle").style.color = "var(--warning)";
+                            document.getElementById("opStep2").className = "op-step";
+                        }
+                        else if (upperStatus === "DONE" || upperStatus === "COMPLETED") {
                             updateButtonStates('completed');
                             document.getElementById("opStatusTitle").innerText = "Processing Complete";
                             document.getElementById("opStatusTitle").style.color = "var(--success)";
@@ -460,6 +734,10 @@
                             let endNode = document.getElementById("node-END");
                             if (startNode) startNode.className = "sys-node done";
                             if (endNode) endNode.className = "sys-node active";
+                            
+                            renderMediaPlayer(job.id);
+                        } else if (upperStatus === "RUNNING") {
+                            updateButtonStates('running');
                         }
                     }
                 });
@@ -473,24 +751,33 @@
         }, 2000);
 
         function submitJob() {
-            const path = document.getElementById("targetPath").value.trim();
-            const lang = document.getElementById("targetLang").value;
+            const isOp = document.getElementById('modeSwitch').checked;
+            let path = isOp ? document.getElementById('targetPathOp').value.trim() : document.getElementById('targetPath').value.trim();
+            path = path.replace(/['"]/g, ''); 
+            
+            const lang = isOp ? document.getElementById("targetLangOp").value : document.getElementById("targetLang").value;
+            const outFormat = isOp ? document.getElementById("targetOutFormatOp").value : document.getElementById("targetOutFormat").value;
+            const minSpk = isOp ? document.getElementById("minSpkOp").value : document.getElementById("minSpk").value;
+            const maxSpk = isOp ? document.getElementById("maxSpkOp").value : document.getElementById("maxSpk").value;
+            const subMode = isOp ? document.getElementById("subtitleModeOp").value : document.getElementById("subtitleMode").value;
+
             if (!path) return;
 
             if (path.startsWith("JOB-")) {
-                alert("Cannot inject an existing Job ID.\n\nTo start a new pipeline, please provide a valid absolute file path to a media file (e.g., D:\\videos\\sample.mp4).");
+                alert("Cannot inject an existing Job ID.");
                 return;
             }
             
-            // 🛡️ THE FIX: Pre-emptively transition UI state and bypass syncInputs()
             updateButtonStates('running');
             document.getElementById("opStatusTitle").innerText = "Processing Active";
             document.getElementById("opStatusTitle").style.color = "var(--accent)";
             document.getElementById("opStep1").className = "op-step done";
             document.getElementById("opLine1").className = "op-line active";
             document.getElementById("opStep2").className = "op-step active";
+            document.getElementById("opMediaPlayer").style.display = "none";
+            currentRenderedJob = null;
             
-            window.go.main.App.SubmitJob(path, lang).then(jobId => {
+            window.go.main.App.SubmitJob(path, lang, outFormat, minSpk, maxSpk, subMode).then(jobId => {
                 selectJob(jobId, "RUNNING"); 
             }).catch(err => {
                 alert(err);
@@ -509,9 +796,7 @@
         }
 
         function resumeJob() {
-            if (!currentJobId) {
-                currentJobId = document.getElementById("targetPath").value.trim();
-            }
+            if (!currentJobId) currentJobId = document.getElementById("targetPath").value.trim().replace(/['"]/g, '');
             if (!currentJobId) return;
 
             window.go.main.App.ResumeJob(currentJobId).then(() => {
@@ -541,25 +826,6 @@
 
             let logHtml = "";
             data.alerts.forEach(log => {
-                if (log.includes("🔍 Detected Source Language:")) {
-                    let lang = log.split("Detected Source Language: ")[1].trim().toLowerCase();
-                    let selects = [document.getElementById('targetLang'), document.getElementById('targetLangOp')];
-                    selects.forEach(sel => {
-                        if(!sel) return;
-                        Array.from(sel.options).forEach(opt => {
-                            if (opt.value === lang) {
-                                opt.disabled = true;
-                                if (!opt.text.includes("(Blacked Out)")) {
-                                    opt.text = opt.text + " (Blacked Out)";
-                                }
-                            } else {
-                                opt.disabled = false;
-                                opt.text = opt.text.replace(" (Blacked Out)", "");
-                            }
-                        });
-                    });
-                }
-                
                 let colorClass = log.includes("✅") ? "log-success" : log.includes("❌") ? "log-error" : log.includes("🛑") || log.includes("🧹") || log.includes("⚠️") || log.includes("🔍") ? "log-warn" : "";
                 logHtml += `<div class="log-line ${colorClass}">${log}</div>`;
             });
@@ -580,7 +846,7 @@
 
                     let isActive = false;
                     let isDone = false;
-                    let isSequential = !document.getElementById('q-' + comp);
+                    let isSequential = pipelineManifest[comp] ? pipelineManifest[comp].execution_mode === "sequential" : false;
 
                     if (isSequential) {
                         isActive = data.global_tasks[comp] === 'RUNNING';
@@ -597,7 +863,6 @@
                     else if (isDone) { node.className = 'dag-node done'; } 
                     else { node.className = 'dag-node'; }
                 });
-
                 document.querySelectorAll('.dag-edge').forEach(edge => {
                     edge.className = anyActive || data.job_complete ? 'dag-edge active' : 'dag-edge';
                 });
@@ -645,7 +910,6 @@
                     
                     let stat = (w.Status || w.status || "").toUpperCase();
                     let isActive = stat === "ACTIVE" || w.IsActive === true;
-                    
                     let chunk = w.CurrentChunk || w.current_chunk || "";
                     let wPct = w.ProgressPct || w.progress_pct || 0;
                     
@@ -660,7 +924,7 @@
                             <div style="background: var(--accent); height: 100%; width: ${wPct}%; transition: width 0.3s linear;"></div>
                             </div></div>`;
                     } else {
-                        activityHtml = '<span class="status-idle">Warm Standby</span>';
+                        activityHtml = '<span class="status-idle">Sequential Process</span>';
                     }
                     pHtml += `<tr><td>${pid}</td><td>${comp}</td><td style='font-family: monospace;'>${ram.toFixed(1)} MB</td><td>${activityHtml}</td></tr>`;
                 });
@@ -668,19 +932,6 @@
                 pHtml += "<tr><td colspan='4' style='text-align:center; padding: 20px; color:var(--text-muted);'>No models resident in memory.</td></tr>";
             }
             document.getElementById("processTable").innerHTML = pHtml;
-
-            if (data.job_complete) {
-                document.getElementById("node-START").className = "sys-node done";
-                document.getElementById("node-END").className = "sys-node active";
-                
-                updateButtonStates('completed');
-                
-                document.getElementById("opStatusTitle").innerText = "Processing Complete";
-                document.getElementById("opStatusTitle").style.color = "var(--success)";
-                document.getElementById("opStep2").className = "op-step done";
-                document.getElementById("opLine2").className = "op-line active";
-                document.getElementById("opStep3").className = "op-step done";
-            }
         });
     </script>
 </body>

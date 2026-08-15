@@ -26,15 +26,11 @@ func main() {
 		projectRoot = filepath.Dir(filepath.Dir(cwd))
 	}
 
-	pythonExec := filepath.Join(projectRoot, ".venv", "Scripts", "python.exe")
-
-	if _, err := os.Stat(pythonExec); os.IsNotExist(err) {
-		panic(fmt.Sprintf("Fatal: Virtual environment not found at %s", pythonExec))
-	}
-
 	checkpointManager := broker.NewCheckpointManager()
-	memoryManager := broker.NewMemoryManager(5000.0, projectRoot, pythonExec, checkpointManager)
-	dagExecutor := pipeline.NewDAGExecutor(memoryManager, checkpointManager, pythonExec, projectRoot)
+
+	// 🛡️ Removed global pythonExec, now injected dynamically by environment
+	memoryManager := broker.NewMemoryManager(5000.0, projectRoot, checkpointManager)
+	dagExecutor := pipeline.NewDAGExecutor(memoryManager, checkpointManager, projectRoot)
 
 	for jobID, job := range checkpointManager.ActiveJobs {
 		if job.Status == broker.JobPaused {
@@ -49,10 +45,9 @@ func main() {
 	app := NewApp(memoryManager, dagExecutor)
 
 	err := wails.Run(&options.App{
-		Title:  "EcoFlow DAG Governor",
-		Width:  1400,
-		Height: 900,
-		// 🛡️ THE FIX: Force the app to open maximized automatically
+		Title:            "Echoflow DAG Governor",
+		Width:            1400,
+		Height:           900,
 		WindowStartState: options.Maximised,
 		AssetServer: &assetserver.Options{
 			Assets: assets,
@@ -65,6 +60,6 @@ func main() {
 	})
 
 	if err != nil {
-		log.Fatal("Error starting EcoFlow GUI:", err.Error())
+		log.Fatal("Error starting Echoflow GUI:", err.Error())
 	}
 }

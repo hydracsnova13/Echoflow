@@ -1,6 +1,6 @@
 {
-    "name": "ecoflow",
-    "outputfilename": "EcoFlow.exe",
+    "name": "echoflow",
+    "outputfilename": "Echoflow.exe",
     "frontend:dir": "frontend",
     "frontend:build": "",
     "frontend:dev": "",

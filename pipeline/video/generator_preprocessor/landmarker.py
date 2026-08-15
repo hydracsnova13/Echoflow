@@ -11,7 +11,7 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 os.environ["OPENCV_LOG_LEVEL"] = "OFF"
 
 def send_ipc(data):
-    print(f"ECOFLOW_IPC__{json.dumps(data)}", flush=True)
+    print(f"ECHOFLOW_IPC__{json.dumps(data)}", flush=True)
 
 def reader_thread(q):
     for line in iter(sys.stdin.readline, ''):

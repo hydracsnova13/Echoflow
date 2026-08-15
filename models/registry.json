@@ -1,22 +1,22 @@
 {
-    "YunetFaceDetector_2023": {
-        "model_path": "models/face_detection_yunet_2023mar.onnx",
-        "framework": "onnx",
-        "estimated_ram_mb": 450.0
-    },
-    "GoogleFacialLandmarker": {
-        "model_path": "models/face_landmarker.task",
-        "framework": "mediapipe",
-        "estimated_ram_mb": 600.0
-    },
     "WhisperSmallDaemon": {
         "model_path": "models/whisper-small",
         "framework": "faster-whisper",
         "estimated_ram_mb": 1200.0
     },
-    "NLLBDaemon": {
-        "model_path": "models/nllb-200-distilled-600M",
+    "PyannoteDiarizerDaemon": {
+        "model_path": "models/offline_pyannote_model",
+        "framework": "pyannote",
+        "estimated_ram_mb": 1000.0
+    },
+    "MMSTTSBase": {
+        "model_path": "models/offline_mms_model",
         "framework": "transformers",
-        "estimated_ram_mb": 2000.0
+        "estimated_ram_mb": 1500.0
+    },
+    "OpenVoiceV2Daemon": {
+        "model_path": "models/offline_openvoice",
+        "framework": "openvoice",
+        "estimated_ram_mb": 2500.0
     }
 }

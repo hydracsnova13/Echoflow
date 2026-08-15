@@ -1,6 +1,8 @@
 package pipeline
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -17,21 +19,17 @@ import (
 type DAGExecutor struct {
 	MemoryManager     *broker.MemoryManager
 	CheckpointManager *broker.CheckpointManager
-	PythonExec        string
 	ProjectRoot       string
 }
 
-func NewDAGExecutor(mm *broker.MemoryManager, cm *broker.CheckpointManager, pyExec, root string) *DAGExecutor {
+func NewDAGExecutor(mm *broker.MemoryManager, cm *broker.CheckpointManager, root string) *DAGExecutor {
 	return &DAGExecutor{
 		MemoryManager:     mm,
 		CheckpointManager: cm,
-		PythonExec:        pyExec,
 		ProjectRoot:       root,
 	}
 }
 
-// 🛡️ THE FIX: Dynamically resolves the correct source directory based on DAG ancestry.
-// This allows the Audio branch and Video branch to maintain completely separate bucket timelines.
 func (d *DAGExecutor) getChunkSourceDir(jobID, compName string) string {
 	curr := compName
 	for {
@@ -47,6 +45,110 @@ func (d *DAGExecutor) getChunkSourceDir(jobID, compName string) string {
 	return ""
 }
 
+func (d *DAGExecutor) getJobConfig(jobID string) (mediaType string, outputFormat string) {
+	configPath := filepath.Join(d.ProjectRoot, "workspace", "jobs", jobID, "job_config.json")
+	mediaType = "video"
+	outputFormat = "video"
+	file, err := os.ReadFile(configPath)
+	if err != nil {
+		return
+	}
+	var config map[string]interface{}
+	if err := json.Unmarshal(file, &config); err == nil {
+		if mt, ok := config["media_type"].(string); ok {
+			mediaType = mt
+		}
+		if of, ok := config["output_format"].(string); ok {
+			outputFormat = of
+		}
+	}
+	return
+}
+
+func isBypassed(mediaType, outputFormat, compName string) bool {
+	isVideoNode := compName == "FrameExtractor" || compName == "FaceDetector" || compName == "FacialLandmarker" || compName == "MouthIsolator"
+	isAudioASRNode := compName == "AudioChunker" || compName == "WhisperTranscriber" || compName == "SpeakerDiarizer" || compName == "TranscriptAggregator"
+
+	if mediaType == "text" {
+		if isVideoNode || isAudioASRNode {
+			return true
+		}
+	}
+	if mediaType == "audio" || outputFormat == "audio" || outputFormat == "text" {
+		if isVideoNode {
+			return true
+		}
+	}
+	if outputFormat == "text" {
+		if compName == "VoiceDubber" {
+			return true
+		}
+	}
+	return false
+}
+
+func (d *DAGExecutor) isDependencySatisfied(job *broker.JobManifest, compName, mediaType, outputFormat string) bool {
+	if isBypassed(mediaType, outputFormat, compName) {
+		meta := d.MemoryManager.PipelineDAG[compName]
+		if len(meta.DependsOn) == 0 {
+			return true
+		}
+		for _, dep := range meta.DependsOn {
+			if !d.isDependencySatisfied(job, dep, mediaType, outputFormat) {
+				return false
+			}
+		}
+		return true
+	}
+
+	meta := d.MemoryManager.PipelineDAG[compName]
+	if meta.ExecutionMode == "sequential" {
+		return job.GlobalTasks[compName] == broker.StateDone
+	} else if meta.ExecutionMode == "chunked" {
+		chunkDir := d.getChunkSourceDir(job.JobID, compName)
+		entries, err := os.ReadDir(chunkDir)
+		if err != nil {
+			return false
+		}
+		bucketCount := 0
+		for _, entry := range entries {
+			if entry.IsDir() && strings.HasPrefix(entry.Name(), "bucket_") {
+				bucketCount++
+				chunkID := entry.Name()
+				if job.Chunks[chunkID] == nil || job.Chunks[chunkID].Components[compName] != broker.StateDone {
+					return false
+				}
+			}
+		}
+		return bucketCount > 0
+	}
+	return false
+}
+
+func (d *DAGExecutor) getActiveInputPath(jobID, compName, mediaType, outputFormat string) string {
+	meta := d.MemoryManager.PipelineDAG[compName]
+
+	if len(meta.DependsOn) == 0 {
+		return d.CheckpointManager.GetJob(jobID).SourceFile
+	}
+
+	currDep := meta.DependsOn[0]
+
+	for isBypassed(mediaType, outputFormat, currDep) {
+		depMeta := d.MemoryManager.PipelineDAG[currDep]
+		if len(depMeta.DependsOn) == 0 {
+			return d.CheckpointManager.GetJob(jobID).SourceFile
+		}
+		currDep = depMeta.DependsOn[0]
+	}
+
+	depMeta := d.MemoryManager.PipelineDAG[currDep]
+	if depMeta.ExecutionMode == "chunked" {
+		return filepath.Join(d.ProjectRoot, "workspace", "jobs", jobID)
+	}
+	return filepath.Join(d.ProjectRoot, "workspace", "jobs", jobID, "out_"+currDep)
+}
+
 func (d *DAGExecutor) EvaluateJob(jobID string) {
 	job := d.CheckpointManager.GetJob(jobID)
 	if job == nil {
@@ -56,9 +158,6 @@ func (d *DAGExecutor) EvaluateJob(jobID string) {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
-	// 🛡️ Transient Retry Tracker
-	// This map lives only as long as the job is running. It tracks how many times
-	// a specific task has failed to prevent infinite crash loops.
 	retryCounts := make(map[string]int)
 
 	for range ticker.C {
@@ -71,21 +170,34 @@ func (d *DAGExecutor) EvaluateJob(jobID string) {
 		}
 
 		hasFatalError := false
+		mediaType, outputFormat := d.getJobConfig(jobID)
 
 		for compName, meta := range d.MemoryManager.PipelineDAG {
 
-			// ==========================================
-			// 1. SEQUENTIAL TASK EXECUTION
-			// ==========================================
+			if isBypassed(mediaType, outputFormat, compName) {
+				if meta.ExecutionMode == "sequential" && job.GlobalTasks[compName] != broker.StateDone {
+					job.UpdateGlobalTask(compName, broker.StateDone)
+				} else if meta.ExecutionMode == "chunked" {
+					chunkDir := d.getChunkSourceDir(jobID, compName)
+					entries, _ := os.ReadDir(chunkDir)
+					for _, entry := range entries {
+						if entry.IsDir() && strings.HasPrefix(entry.Name(), "bucket_") {
+							chunkID := entry.Name()
+							job.UpdateChunkState(chunkID, compName, broker.StateDone)
+						}
+					}
+				}
+				continue
+			}
+
 			if meta.ExecutionMode == "sequential" {
 
-				// 🛡️ Auto-Recovery for CPU Tasks
 				if job.GlobalTasks[compName] == broker.StateError {
 					retryKey := compName
 					if retryCounts[retryKey] < 3 {
 						retryCounts[retryKey]++
 						d.MemoryManager.LogToUI(fmt.Sprintf("🔄 [Auto-Recovery] Retrying crashed CPU task %s (Attempt %d/3)", compName, retryCounts[retryKey]))
-						job.UpdateGlobalTask(compName, "") // Clear state to instantly re-trigger
+						job.UpdateGlobalTask(compName, "")
 					} else {
 						hasFatalError = true
 					}
@@ -93,53 +205,15 @@ func (d *DAGExecutor) EvaluateJob(jobID string) {
 
 				canRunSeq := true
 				for _, dep := range meta.DependsOn {
-					depMeta := d.MemoryManager.PipelineDAG[dep]
-
-					if depMeta.ExecutionMode == "sequential" {
-						if job.GlobalTasks[dep] != broker.StateDone {
-							canRunSeq = false
-							break
-						}
-					} else if depMeta.ExecutionMode == "chunked" {
-						// Wait for ALL buckets in the target branch to finish
-						chunkDir := d.getChunkSourceDir(jobID, dep)
-						entries, err := os.ReadDir(chunkDir)
-						if err != nil {
-							canRunSeq = false
-							break
-						}
-
-						bucketCount := 0
-						for _, entry := range entries {
-							if entry.IsDir() && strings.HasPrefix(entry.Name(), "bucket_") {
-								bucketCount++
-								chunkID := entry.Name()
-								if job.Chunks[chunkID] == nil || job.Chunks[chunkID].Components[dep] != broker.StateDone {
-									canRunSeq = false
-									break
-								}
-							}
-						}
-
-						if bucketCount == 0 {
-							canRunSeq = false
-							break
-						}
+					if !d.isDependencySatisfied(job, dep, mediaType, outputFormat) {
+						canRunSeq = false
+						break
 					}
 				}
 
 				if canRunSeq && job.GlobalTasks[compName] == "" {
 					job.UpdateGlobalTask(compName, broker.StateRunning)
-
-					inputPath := job.SourceFile
-					if len(meta.DependsOn) > 0 {
-						depMeta := d.MemoryManager.PipelineDAG[meta.DependsOn[0]]
-						if depMeta.ExecutionMode == "chunked" {
-							inputPath = filepath.Join(d.ProjectRoot, "workspace", "jobs", jobID)
-						} else {
-							inputPath = filepath.Join(d.ProjectRoot, "workspace", "jobs", jobID, "out_"+meta.DependsOn[0])
-						}
-					}
+					inputPath := d.getActiveInputPath(jobID, compName, mediaType, outputFormat)
 
 					if meta.Domain == "cpu" {
 						go d.ExecuteCPUCommand(jobID, compName, meta, inputPath)
@@ -147,12 +221,22 @@ func (d *DAGExecutor) EvaluateJob(jobID string) {
 				}
 			}
 
-			// ==========================================
-			// 2. CHUNKED DAEMON EXECUTION
-			// ==========================================
 			if meta.ExecutionMode == "chunked" {
 
-				// 🛡️ THE FIX: Dynamically fetch buckets exclusively for this component's branch
+				upstreamActive := true
+				if len(meta.DependsOn) > 0 {
+					for _, dep := range meta.DependsOn {
+						if !d.isDependencySatisfied(job, dep, mediaType, outputFormat) && job.GlobalTasks[dep] != broker.StateRunning {
+							upstreamActive = false
+							break
+						}
+					}
+				}
+
+				if len(meta.DependsOn) > 0 && !upstreamActive {
+					continue
+				}
+
 				chunkDir := d.getChunkSourceDir(jobID, compName)
 				entries, err := os.ReadDir(chunkDir)
 				if err != nil {
@@ -174,14 +258,11 @@ func (d *DAGExecutor) EvaluateJob(jobID string) {
 						currentState = job.Chunks[chunkID].Components[compName]
 					}
 
-					// 🛡️ Auto-Recovery for RAM Daemons (Race Condition Fix)
 					if currentState == broker.StateError {
 						retryKey := chunkID + "_" + compName
 						if retryCounts[retryKey] < 3 {
 							retryCounts[retryKey]++
 							d.MemoryManager.LogToUI(fmt.Sprintf("🔄 [Auto-Recovery] Re-queuing failed chunk %s for %s (Attempt %d/3)", chunkID, compName, retryCounts[retryKey]))
-
-							// Clear the error state in memory and on disk
 							currentState = broker.StatePending
 							job.UpdateChunkState(chunkID, compName, broker.StatePending)
 						} else {
@@ -195,6 +276,10 @@ func (d *DAGExecutor) EvaluateJob(jobID string) {
 
 					chunkCanRun := true
 					for _, dep := range meta.DependsOn {
+						if isBypassed(mediaType, outputFormat, dep) {
+							continue
+						}
+
 						depMeta := d.MemoryManager.PipelineDAG[dep]
 						if depMeta.ExecutionMode == "sequential" {
 							if job.GlobalTasks[dep] != broker.StateDone && job.GlobalTasks[dep] != broker.StateRunning {
@@ -231,15 +316,13 @@ func (d *DAGExecutor) EvaluateJob(jobID string) {
 			}
 		}
 
-		// 🛡️ Final Strike Protocol
-		// If any chunk fails 3 times, the system assumes a hard crash and pauses
 		if hasFatalError {
 			job.SetStatus(broker.JobPaused)
 			d.MemoryManager.LogToUI(fmt.Sprintf("⚠️ [DAG Engine] Job %s suspended after exceeding retry limits. Manual resume required.", jobID))
 			return
 		}
 
-		if d.isJobComplete(job) {
+		if d.isJobComplete(job, mediaType, outputFormat) {
 			job.SetStatus(broker.JobDone)
 			atomic.AddInt32(&d.MemoryManager.CompletedTasks, 1)
 			d.MemoryManager.LogToUI(fmt.Sprintf("🏁 [DAG Engine] Job %s COMPLETED! All branches synchronized.", jobID))
@@ -248,12 +331,15 @@ func (d *DAGExecutor) EvaluateJob(jobID string) {
 	}
 }
 
-// 🛡️ THE FIX: Deep-scans both audio and video buckets dynamically to guarantee job completion
-func (d *DAGExecutor) isJobComplete(job *broker.JobManifest) bool {
+func (d *DAGExecutor) isJobComplete(job *broker.JobManifest, mediaType string, outputFormat string) bool {
 	job.Mu.Lock()
 	defer job.Mu.Unlock()
 
 	for compName, meta := range d.MemoryManager.PipelineDAG {
+		if isBypassed(mediaType, outputFormat, compName) {
+			continue
+		}
+
 		if meta.ExecutionMode == "sequential" && job.GlobalTasks[compName] != broker.StateDone {
 			return false
 		}
@@ -294,12 +380,29 @@ func (d *DAGExecutor) ExecuteCPUCommand(jobID string, compName string, meta brok
 	outputDir := filepath.Join(jobDir, "out_"+compName)
 	scriptPath := filepath.Join(d.ProjectRoot, meta.Script)
 
-	cmd := exec.Command(d.PythonExec, scriptPath, inputFile, outputDir)
+	pythonExec := d.MemoryManager.GetPythonExec(meta.EnvName)
+
+	cmd := exec.Command(pythonExec, scriptPath, inputFile, outputDir)
 	cmd.Env = append(os.Environ(), "PYTHONIOENCODING=utf-8")
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 
-	out, err := cmd.CombinedOutput()
-	pythonLogs := strings.TrimSpace(string(out))
+	var outBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &outBuf
+
+	if err := cmd.Start(); err != nil {
+		d.MemoryManager.LogToUI(fmt.Sprintf("❌ %s failed to start! Error: %v", compName, err))
+		job.UpdateGlobalTask(compName, broker.StateError)
+		return
+	}
+
+	pid := cmd.Process.Pid
+	estRAM := d.MemoryManager.TrackCPUStart(compName, pid)
+
+	err := cmd.Wait()
+	d.MemoryManager.TrackCPUEnd(compName, pid, estRAM)
+
+	pythonLogs := strings.TrimSpace(outBuf.String())
 
 	if err != nil {
 		d.MemoryManager.LogToUI(fmt.Sprintf("❌ %s crashed! Error: %v | Logs: %s", compName, err, pythonLogs))
