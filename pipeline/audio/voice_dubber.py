@@ -5,13 +5,21 @@ import re
 import warnings
 import logging
 import json
+
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
 import soundfile as sf
 import numpy as np
 from pathlib import Path
 from pydub import AudioSegment
 
+num_cores = min(4, os.cpu_count() or 4)
+os.environ["OMP_NUM_THREADS"] = str(num_cores)
+os.environ["OPENBLAS_NUM_THREADS"] = str(num_cores)
+os.environ["MKL_NUM_THREADS"] = str(num_cores)
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
 import torch
+torch.set_num_threads(num_cores)
 torch.cuda.is_available = lambda: False
 
 os.environ["HF_HUB_OFFLINE"] = "1"
@@ -56,30 +64,104 @@ torch.set_num_threads(num_cores)
 torch.set_num_interop_threads(num_cores)
 
 def load_mms_language(project_root, lang_code):
+    lang_clean = str(lang_code).lower().strip()
     path_map = {
         "mr": "models/offline_mms_model/mar",
+        "mar": "models/offline_mms_model/mar",
         "hi": "models/offline_mms_model/hin",
-        "en": "models/offline_mms_model/eng"
+        "hin": "models/offline_mms_model/hin",
+        "en": "models/offline_mms_model/eng",
+        "eng": "models/offline_mms_model/eng"
     }
-    rel_path = path_map.get(lang_code, "models/offline_mms_model/hin")
+    rel_path = path_map.get(lang_clean, f"models/offline_mms_model/{lang_clean}")
     model_path = os.path.join(project_root, rel_path)
+    
     if not os.path.exists(model_path):
-        print(f"❌ Error: Could not find MMS model at '{model_path}'.", flush=True)
+        mms_root = os.path.join(project_root, "models", "offline_mms_model")
+        if os.path.exists(mms_root):
+            for folder in os.listdir(mms_root):
+                if folder.startswith(lang_clean[:2]) or lang_clean[:2] in folder:
+                    model_path = os.path.join(mms_root, folder)
+                    break
+
+    if not os.path.exists(model_path):
+        print(f"❌ Error: Language '{lang_code}' MMS model not found at '{model_path}'", flush=True)
         sys.exit(1)
+        
     print(f"📦 Loading MMS Base TTS from: {os.path.basename(model_path)}...", flush=True)
     tokenizer = AutoTokenizer.from_pretrained(model_path, local_files_only=True)
     model = VitsModel.from_pretrained(model_path, local_files_only=True)
     return tokenizer, model
 
-def stretch_audio(audio_segment: AudioSegment, target_duration_ms: int) -> AudioSegment:
+import subprocess
+import tempfile
+
+def stretch_audio(audio_segment: AudioSegment, target_duration_ms: int, max_allowed_ms: int = None, max_speed: float = 1.45) -> AudioSegment:
     current_duration = len(audio_segment)
+    if current_duration <= 0 or target_duration_ms <= 0:
+        return audio_segment
+
+    if max_allowed_ms is None:
+        max_allowed_ms = target_duration_ms
+
     if current_duration <= target_duration_ms:
-        silence = AudioSegment.silent(duration=(target_duration_ms - current_duration))
-        return audio_segment + silence
-    else:
-        speed_ratio = current_duration / target_duration_ms
-        stretched = audio_segment.speedup(playback_speed=speed_ratio, chunk_size=100, crossfade=50)
-        return stretched[:target_duration_ms]
+        return audio_segment
+
+    speed_ratio = current_duration / float(target_duration_ms)
+    bounded_speed = max(0.85, min(max_speed, speed_ratio))
+
+    ffmpeg_bin = AudioSegment.converter or "ffmpeg"
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as in_f, \
+             tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as out_f:
+            in_path = in_f.name
+            out_path = out_f.name
+
+        audio_segment.export(in_path, format="wav")
+        cmd = [
+            ffmpeg_bin, "-y", "-i", in_path,
+            "-filter:a", f"atempo={bounded_speed:.3f}",
+            out_path
+        ]
+        res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if res.returncode == 0 and os.path.exists(out_path):
+            stretched = AudioSegment.from_wav(out_path)
+            try:
+                os.remove(in_path)
+                os.remove(out_path)
+            except Exception:
+                pass
+            if len(stretched) > max_allowed_ms:
+                return stretched[:max_allowed_ms]
+            return stretched
+        try:
+            os.remove(in_path)
+            os.remove(out_path)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+    try:
+        stretched = audio_segment.speedup(playback_speed=bounded_speed, chunk_size=100, crossfade=50)
+        if len(stretched) > max_allowed_ms:
+            return stretched[:max_allowed_ms]
+        return stretched
+    except Exception:
+        if len(audio_segment) > max_allowed_ms:
+            return audio_segment[:max_allowed_ms]
+        return audio_segment
+
+def sanitize_text_for_tts(text: str) -> str:
+    cleaned = text
+    cleaned = re.sub(r"\[.*?\]", "", cleaned)
+    cleaned = re.sub(r"\((.*?)\)", r"\1", cleaned)
+    cleaned = cleaned.replace("&", " and ")
+    # Map Devanagari Danda (।) and Double Danda (॥) to standard period for VITS pause cadence
+    cleaned = cleaned.replace("।", ".").replace("॥", ".")
+    cleaned = re.sub(r"[^\w\s\.,!\?'\u0900-\u097F\u0600-\u06FF\u0B80-\u0BFF\u0C00-\u0C7F\u0D00-\u0D7F]", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
 
 def run_fast_offline_dubber(input_target, output_dir):
     project_root = Path(__file__).resolve().parent.parent.parent
@@ -108,6 +190,8 @@ def run_fast_offline_dubber(input_target, output_dir):
     target_language = "hi"
     output_format = "wav"
     media_type = "video"
+    dubbing_voice_cloning = "yes"
+    dubbing_speed_mode = "adaptive"
     config_path = os.path.join(job_root, "job_config.json")
     if os.path.exists(config_path):
         with open(config_path, "r") as cfg:
@@ -115,6 +199,8 @@ def run_fast_offline_dubber(input_target, output_dir):
             target_language = c.get("target_language", "hi")
             output_format = c.get("output_format", "wav").lower()
             media_type = c.get("media_type", "video").lower()
+            dubbing_voice_cloning = c.get("dubbing_voice_cloning", "yes").lower()
+            dubbing_speed_mode = c.get("dubbing_speed_mode", "adaptive").lower()
 
     # 🛡️ THE FIX 1: Safely bypass if output is pure text
     text_formats = ["srt", "txt", "json", "text"]
@@ -145,11 +231,14 @@ def run_fast_offline_dubber(input_target, output_dir):
         if os.path.exists(fallback_chunk):
             speaker_files["SPEAKER_00"] = fallback_chunk
 
-    has_references = len(speaker_files) > 0
+    # Force bypass tone conversion if voice cloning is explicitly disabled in job_config
+    if dubbing_voice_cloning == "no":
+        print("⏩ [VoiceDubber] Voice Cloning disabled in config. Using pure Studio Base Voice (MMS).", flush=True)
+        has_references = False
+    else:
+        has_references = len(speaker_files) > 0
 
-    # 🛡️ THE FIX 2: Do not crash if input is text and we have no references. 
-    # Fallback to pure base MMS generation instead!
-    if not has_references and media_type != "text":
+    if not has_references and media_type != "text" and dubbing_voice_cloning != "no":
         print("❌ [VoiceDubber] No speaker reference audio files found.", flush=True)
         sys.exit(1)
 
@@ -189,6 +278,7 @@ def run_fast_offline_dubber(input_target, output_dir):
     print("🎤 [VoiceDubber] Starting voice processing...", flush=True)
     
     target_se_cache = {}
+    source_se_cache = {}
 
     for i, sub in enumerate(subs):
         raw_text = sub.text.replace('\n', ' ')
@@ -203,15 +293,15 @@ def run_fast_offline_dubber(input_target, output_dir):
             current_speaker = default_speaker
             spoken_text = raw_text.strip()
             
+        spoken_text = sanitize_text_for_tts(spoken_text)
         if not spoken_text:
             continue
 
         ref_wav = speaker_files.get(current_speaker, speaker_files.get(default_speaker)) if has_references else None
         if has_references and (not ref_wav or not os.path.exists(ref_wav)):
-            print(f"⚠️ Warning: Reference missing! Skipping line: '{spoken_text}'", flush=True)
-            continue
-            
-        print(f"   [{i+1}/{len(subs)}] Voice: [{current_speaker}] | Text: '{spoken_text[:30]}...'", flush=True)
+            ref_wav = list(speaker_files.values())[0] if speaker_files else None
+
+        print(f"   [{i+1}/{len(subs)}] Voice: [{current_speaker}] | Text: '{spoken_text[:35]}...'", flush=True)
         
         base_audio_path = os.path.join(output_dir, f"temp_base_{current_speaker}_{i}.wav")
         chunk_output = os.path.join(output_dir, f"final_chunk_{current_speaker}_{i}.wav")
@@ -222,33 +312,57 @@ def run_fast_offline_dubber(input_target, output_dir):
                 output = mms_model(**inputs).waveform
             sf.write(base_audio_path, output.squeeze().numpy(), mms_model.config.sampling_rate)
             
-            if has_references:
-                source_se, _ = se_extractor.get_se(base_audio_path, tone_color_converter, target_dir=ov_temp_dir, vad=True)
-                
-                if current_speaker not in target_se_cache:
-                    print(f"      🔍 Extracting Base Tone Embedding for {current_speaker}...", flush=True)
-                    target_se, _ = se_extractor.get_se(ref_wav, tone_color_converter, target_dir=ov_temp_dir, vad=True)
-                    target_se_cache[current_speaker] = target_se
-                
-                target_se = target_se_cache[current_speaker]
-                
-                tone_color_converter.convert(
-                    audio_src_path=base_audio_path,
-                    src_se=source_se,
-                    tgt_se=target_se,
-                    output_path=chunk_output
-                )
-                generated_segment = AudioSegment.from_wav(chunk_output)
-            else:
-                # 🛡️ THE FIX 3: Fallback directly to generic MMS output if no references
+            generated_segment = None
+            if has_references and ref_wav and os.path.exists(ref_wav):
+                try:
+                    # Cache source_se for the base MMS voice to avoid re-extracting on every line
+                    if target_language not in source_se_cache:
+                        source_se, _ = se_extractor.get_se(base_audio_path, tone_color_converter, target_dir=ov_temp_dir, vad=True)
+                        source_se_cache[target_language] = source_se
+                    else:
+                        source_se = source_se_cache[target_language]
+
+                    if current_speaker not in target_se_cache:
+                        print(f"      🔍 Extracting Base Tone Embedding for {current_speaker}...", flush=True)
+                        target_se, _ = se_extractor.get_se(ref_wav, tone_color_converter, target_dir=ov_temp_dir, vad=True)
+                        target_se_cache[current_speaker] = target_se
+                    
+                    target_se = target_se_cache[current_speaker]
+                    
+                    tone_color_converter.convert(
+                        audio_src_path=base_audio_path,
+                        src_se=source_se,
+                        tgt_se=target_se,
+                        output_path=chunk_output
+                    )
+                    if os.path.exists(chunk_output):
+                        generated_segment = AudioSegment.from_wav(chunk_output)
+                except Exception as ov_err:
+                    print(f"   ⚠️ OpenVoice conversion warning for {current_speaker}: {ov_err}. Using base TTS audio.", flush=True)
+
+            if generated_segment is None and os.path.exists(base_audio_path):
                 generated_segment = AudioSegment.from_wav(base_audio_path)
-                
-            synced_segment = stretch_audio(generated_segment, target_duration_ms)
-            master_timeline = master_timeline.overlay(synced_segment, position=start_time_ms)
+
+            if generated_segment is not None and len(generated_segment) > 0:
+                if i + 1 < len(subs):
+                    max_allowed_ms = max(target_duration_ms, subs[i+1].start.ordinal - start_time_ms - 50)
+                else:
+                    max_allowed_ms = target_duration_ms + 3000
+
+                max_speed = 1.15 if dubbing_speed_mode == "natural" else 1.45
+                synced_segment = stretch_audio(generated_segment, target_duration_ms, max_allowed_ms, max_speed=max_speed)
+                # Normalize peak loudness to -3.0 dBFS for uniform audio mastering
+                if synced_segment.max_dBFS > -100:
+                    change_in_dBFS = -3.0 - synced_segment.max_dBFS
+                    synced_segment = synced_segment.apply_gain(change_in_dBFS)
+
+                master_timeline = master_timeline.overlay(synced_segment, position=start_time_ms)
+            else:
+                print(f"⚠️ Warning: Could not generate audio clip for line {i+1}", flush=True)
             
         except Exception as e:
             import traceback
-            print(f"❌ Error during conversion for {current_speaker}: {e}", flush=True)
+            print(f"❌ Error during generation for {current_speaker}: {e}", flush=True)
             traceback.print_exc()
             
         finally:
@@ -263,9 +377,16 @@ def run_fast_offline_dubber(input_target, output_dir):
         pass
 
     final_output = os.path.join(output_dir, "master_dubbed.wav")
-    print(f"💾 Exporting timeline...", flush=True)
-    master_timeline.export(final_output, format="wav")
-    print(f"🎉 Pipeline Complete! Saved to: {final_output}", flush=True)
+    if os.path.exists(final_output):
+        try:
+            os.remove(final_output)
+        except Exception:
+            pass
+    print(f"💾 Exporting timeline ({len(master_timeline)} ms)...", flush=True)
+    out_file = master_timeline.export(final_output, format="wav")
+    if hasattr(out_file, 'close'):
+        out_file.close()
+    print(f"🎉 Pipeline Complete! Saved to: {final_output} (Size: {os.path.getsize(final_output)} bytes)", flush=True)
 
 if __name__ == "__main__":
     if len(sys.argv) >= 3:

@@ -8,7 +8,7 @@ import queue
 from faster_whisper import WhisperModel
 
 # Enforce strict CPU limits for CTranslate2 (Faster-Whisper backend)
-num_cores = str(max(1, os.cpu_count() - 2))
+num_cores = str(min(4, max(1, (os.cpu_count() or 4) - 2)))
 os.environ["OMP_NUM_THREADS"] = num_cores
 os.environ["OPENBLAS_NUM_THREADS"] = num_cores
 os.environ["MKL_NUM_THREADS"] = num_cores
@@ -37,6 +37,8 @@ def boot_daemon():
             local_model_path, 
             device=device, 
             compute_type=compute_type, 
+            cpu_threads=4,
+            num_workers=1,
             local_files_only=True
         )
     except Exception as e:
@@ -96,16 +98,39 @@ def boot_daemon():
 
             send_ipc({"status": "progress", "chunk": chunk_name, "pct": 10})
 
+            # Check if source_language is specified in job_config.json, else auto-detect (language=None)
+            source_lang = None
+            transcription_quality = "balanced"
+            if job_root:
+                config_path = os.path.join(job_root, "job_config.json")
+                if os.path.exists(config_path):
+                    with open(config_path, "r") as cfg:
+                        job_cfg = json.load(cfg)
+                        source_lang = job_cfg.get("source_language")
+                        transcription_quality = job_cfg.get("transcription_quality", "balanced")
+
+            # Adaptive beam parameters based on quality setting
+            if transcription_quality == "fast":
+                beam_size, best_of = 1, 1
+            elif transcription_quality == "accurate":
+                beam_size, best_of = 5, 5
+            else:  # balanced (default)
+                beam_size, best_of = 3, 3
+
             segments, info = model.transcribe(
                 wav_path,
-                beam_size=5, # 1
-                best_of=5, # 1
+                beam_size=beam_size,
+                best_of=best_of,
                 temperature=0.0,
-                language="en",
+                language=source_lang, # Auto-detects spoken language (e.g. 'mr', 'hi', 'en') if None
                 vad_filter=True, 
-                vad_parameters=dict(min_silence_duration_ms=500), #1000
-                condition_on_previous_text=False
+                vad_parameters=dict(min_silence_duration_ms=500),
+                condition_on_previous_text=False,
+                repetition_penalty=1.2,
+                no_repeat_ngram_size=3
             )
+
+            detected_lang = getattr(info, "language", source_lang or "mr")
 
             segments_data = []
             for seg in segments:
@@ -124,7 +149,7 @@ def boot_daemon():
                 "end": meta["end"],
                 "text": chunk_text,
                 "segments": segments_data, 
-                "language": getattr(info, "language", "en")
+                "language": detected_lang
             }
 
             with open(os.path.join(target_bucket_dir, "transcript.json"), "w") as f:

@@ -313,3 +313,4 @@ credentials/
 # HuggingFace tokens
 .huggingface/
 hf_token*
+benchmark

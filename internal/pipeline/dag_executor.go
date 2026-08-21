@@ -258,6 +258,7 @@ func (d *DAGExecutor) EvaluateJob(jobID string) {
 						currentState = job.Chunks[chunkID].Components[compName]
 					}
 
+					isRetry := false
 					if currentState == broker.StateError {
 						retryKey := chunkID + "_" + compName
 						if retryCounts[retryKey] < 3 {
@@ -265,6 +266,7 @@ func (d *DAGExecutor) EvaluateJob(jobID string) {
 							d.MemoryManager.LogToUI(fmt.Sprintf("🔄 [Auto-Recovery] Re-queuing failed chunk %s for %s (Attempt %d/3)", chunkID, compName, retryCounts[retryKey]))
 							currentState = broker.StatePending
 							job.UpdateChunkState(chunkID, compName, broker.StatePending)
+							isRetry = true
 						} else {
 							hasFatalError = true
 						}
@@ -300,12 +302,17 @@ func (d *DAGExecutor) EvaluateJob(jobID string) {
 						inputPath := filepath.Join(chunkDir, chunkID)
 						job.UpdateChunkState(chunkID, compName, broker.StateQueued)
 
-						d.MemoryManager.PushBucket(broker.BucketTask{
+						task := broker.BucketTask{
 							JobID:     jobID,
 							ChunkID:   chunkID,
 							Component: compName,
 							InputData: inputPath,
-						})
+						}
+						if isRetry {
+							d.MemoryManager.PushBucketPriority(task)
+						} else {
+							d.MemoryManager.PushBucket(task)
+						}
 						pushedNewTasks = true
 					}
 				}

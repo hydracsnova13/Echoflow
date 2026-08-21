@@ -108,7 +108,7 @@ func (a *App) GetRecentCheckpoints() ([]JobSummary, error) {
 	return jobs, nil
 }
 
-func (a *App) SubmitJob(targetPath string, targetLang string, targetOutFormat string, minSpeakers string, maxSpeakers string, subtitleMode string) (string, error) {
+func (a *App) SubmitJob(targetPath string, sourceLang string, targetLang string, targetOutFormat string, numSpeakers string, transcriptionQuality string, dubCloning string, dubSpeed string, subtitleMode string) (string, error) {
 	targetPath = strings.Trim(strings.TrimSpace(targetPath), "\"'")
 
 	if strings.HasPrefix(targetPath, "JOB-") {
@@ -137,15 +137,28 @@ func (a *App) SubmitJob(targetPath string, targetLang string, targetOutFormat st
 		mediaType = "text"
 	}
 
+	// Derive min/max speakers from the unified num_speakers field
+	minSpeakers := ""
+	maxSpeakers := ""
+	if numSpeakers != "" && numSpeakers != "auto" {
+		minSpeakers = numSpeakers
+		maxSpeakers = numSpeakers
+	}
+
 	configPath := filepath.Join(jobDir, "job_config.json")
 	configData := fmt.Sprintf(`{
+		"source_language": "%s",
 		"target_language": "%s",
 		"media_type": "%s",
 		"output_format": "%s",
+		"num_speakers": "%s",
 		"min_speakers": "%s",
 		"max_speakers": "%s",
+		"transcription_quality": "%s",
+		"dubbing_voice_cloning": "%s",
+		"dubbing_speed_mode": "%s",
 		"subtitle_mode": "%s"
-	}`, targetLang, mediaType, targetOutFormat, minSpeakers, maxSpeakers, subtitleMode)
+	}`, sourceLang, targetLang, mediaType, targetOutFormat, numSpeakers, minSpeakers, maxSpeakers, transcriptionQuality, dubCloning, dubSpeed, subtitleMode)
 	os.WriteFile(configPath, []byte(configData), 0644)
 
 	fileName := filepath.Base(targetPath)

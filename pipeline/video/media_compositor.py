@@ -6,6 +6,9 @@ import shutil
 import re
 from pathlib import Path
 
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
+
 def compose_media(input_target, output_dir):
     curr = os.path.abspath(input_target)
     job_root = None
@@ -119,17 +122,33 @@ def compose_media(input_target, output_dir):
         print("❌ [MediaCompositor] Original video not found for muxing.", flush=True)
         sys.exit(1)
         
+    has_dubbed_audio = os.path.exists(dubbed_audio)
+    
     cmd = [
         ffmpeg_path, "-y",
-        "-i", str(os.path.abspath(original_video)),
-        "-i", str(os.path.abspath(dubbed_audio))
+        "-i", str(os.path.abspath(original_video))
     ]
     
-    encode_args = [
-        "-map", "0:v:0", "-map", "1:a:0",
-        "-c:v", "libx264", "-crf", "23", "-preset", "fast",
-        "-c:a", "aac", "-b:a", "192k", "-ar", "44100", "-shortest"
-    ]
+    if has_dubbed_audio:
+        cmd.extend(["-i", str(os.path.abspath(dubbed_audio))])
+        encode_args = [
+            "-map", "0:v:0", "-map", "1:a:0",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "22", "-preset", "fast",
+            "-c:a", "aac", "-b:a", "192k", "-ac", "2", "-ar", "44100",
+            "-max_muxing_queue_size", "1024",
+            "-movflags", "+faststart",
+            "-shortest"
+        ]
+    else:
+        print("⚠️ [MediaCompositor] Dubbed audio not found. Recomposing using original audio track.", flush=True)
+        encode_args = [
+            "-map", "0:v:0", "-map", "0:a:0?",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "22", "-preset", "fast",
+            "-c:a", "aac", "-b:a", "192k", "-ac", "2", "-ar", "44100",
+            "-max_muxing_queue_size", "1024",
+            "-movflags", "+faststart",
+            "-shortest"
+        ]
 
     if subtitle_mode in ["source", "target"]:
         srt_name = "source.srt" if subtitle_mode == "source" else "subtitles.srt"

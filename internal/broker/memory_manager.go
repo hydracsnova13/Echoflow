@@ -51,6 +51,7 @@ type WarmWorker struct {
 	IsActive     bool    `json:"is_active"`
 	CurrentChunk string  `json:"current_chunk"`
 	ProgressPct  int     `json:"progress_pct"`
+	TaskCount    int     `json:"task_count"`
 	Stdin        io.WriteCloser
 	Stdout       *bufio.Scanner
 	Cmd          *exec.Cmd
@@ -211,6 +212,18 @@ func (m *MemoryManager) PushBucket(task BucketTask) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.PendingBuckets[task.Component] = append(m.PendingBuckets[task.Component], task)
+}
+
+// PushBucketPriority inserts a task at the FRONT of the queue.
+// Used for re-queuing failed chunks so they fail-fast on persistent issues.
+func (m *MemoryManager) PushBucketPriority(task BucketTask) {
+	job := m.Checkpoints.GetJob(task.JobID)
+	if job != nil && job.Status == JobPaused {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.PendingBuckets[task.Component] = append([]BucketTask{task}, m.PendingBuckets[task.Component]...)
 }
 
 func (m *MemoryManager) ClearPendingForJob(jobID string) {
@@ -434,6 +447,7 @@ func (m *MemoryManager) executeTask(worker *WarmWorker, task BucketTask) {
 	req := map[string]string{"input": task.InputData}
 	reqBytes, _ := json.Marshal(req)
 
+	worker.TaskCount++
 	m.LogToUI(fmt.Sprintf("⚡ [%s] Processing chunk %s...", task.Component, task.ChunkID))
 	worker.Stdin.Write(reqBytes)
 	worker.Stdin.Write([]byte("\n"))
@@ -480,10 +494,16 @@ func (m *MemoryManager) executeTask(worker *WarmWorker, task BucketTask) {
 		close(doneChan)
 	}()
 
+	// Adaptive timeout: cold-start (first task on daemon) gets more time
+	timeout := 10 * time.Minute
+	if worker.TaskCount <= 1 {
+		timeout = 25 * time.Minute
+	}
+
 	select {
 	case <-doneChan:
 		return
-	case <-time.After(15 * time.Minute):
+	case <-time.After(timeout):
 		job.UpdateChunkState(task.ChunkID, task.Component, StateError)
 		m.LogToUI(fmt.Sprintf("❌ [%s] Task timeout! Daemon froze on %s", task.Component, task.ChunkID))
 		if worker.Cmd != nil && worker.Cmd.Process != nil {

@@ -210,10 +210,17 @@
             <div class="op-kpi-card" style="flex: 2; padding: 20px; text-align: left;">
                 <div class="op-kpi-label" style="margin-bottom: 12px;">Job Injection Gateway</div>
                 <div class="gateway-container">
-                    <input type="text" id="targetPathOp" placeholder="Absolute Input Path (.mp4, .wav, .txt)" oninput="syncInputs()">
+                    <input type="text" id="targetPathOp" placeholder="Absolute Input Path (.mp4, .wav, .txt)" oninput="syncInputs()" title="Input File Path: Provide an absolute path to your source media file (.mp4, .wav, .txt).">
                     
                     <div class="gateway-controls">
-                        <select id="targetOutFormatOp" onchange="syncInputs()">
+                        <select id="sourceLangOp" onchange="syncInputs()" title="Source Language: Original language spoken in the source media. Selecting the known language (English, Hindi, or Marathi) bypasses Whisper auto-detection to prevent timeouts.">
+                            <option value="" selected>Auto Detect</option>
+                            <option value="en">English (en)</option>
+                            <option value="hi">Hindi (hi)</option>
+                            <option value="mr">Marathi (mr)</option>
+                        </select>
+
+                        <select id="targetOutFormatOp" onchange="syncInputs()" title="Output Media Format: Desired final output format. Choose Video (.mp4, .mov), Audio (.wav, .mp3), or Text (.srt, .txt).">
                             <optgroup label="Video Formats">
                                 <option value="mp4" selected>Video (.mp4)</option>
                                 <option value="mov">Video (.mov)</option>
@@ -237,20 +244,42 @@
                             </optgroup>
                         </select>
 
-                        <select id="targetLangOp" onchange="syncInputs()">
+                        <select id="targetLangOp" onchange="syncInputs()" title="Target Language: Language into which the speech will be translated and dubbed (English, Hindi, or Marathi).">
                             <option value="en">Eng (en)</option>
                             <option value="hi" selected>Hin (hi)</option>
                             <option value="mr">Mar (mr)</option>
                         </select>
                         
-                        <select id="subtitleModeOp" onchange="syncInputs()">
+                        <select id="subtitleModeOp" onchange="syncInputs()" title="Subtitle Mode: Controls subtitle burning on the output video: No Subtitles, Burn Target Subtitles (translated), or Burn Source Subtitles.">
                             <option value="none" selected>No Subtitles</option>
                             <option value="target">Burn Target Subtitles</option>
                             <option value="source">Burn Source Subtitles</option>
                         </select>
-                        
-                        <input type="number" id="minSpkOp" placeholder="Min Spk" min="1" max="20" style="width: 90px; display: none;" title="Minimum Speakers" oninput="syncInputs()">
-                        <input type="number" id="maxSpkOp" placeholder="Max Spk" min="1" max="20" style="width: 90px; display: none;" title="Maximum Speakers" oninput="syncInputs()">
+
+                        <select id="numSpeakersOp" onchange="syncInputs()" style="display: none;" title="Number of Speakers: Expected speaker count. Selecting '1 Speaker' activates an ultra-fast bypass mode (< 1s execution).">
+                            <option value="auto" selected>Speakers: Auto</option>
+                            <option value="1">1 Speaker</option>
+                            <option value="2">2 Speakers</option>
+                            <option value="3">3 Speakers</option>
+                            <option value="4">4 Speakers</option>
+                            <option value="5">5 Speakers</option>
+                        </select>
+
+                        <select id="transcriptionQualityOp" onchange="syncInputs()" style="display: none;" title="Transcription Quality: Whisper ASR decoding search depth. Fast (2x faster decoding), Balanced (default), or Accurate (deep beam search).">
+                            <option value="fast">Speed: Fast</option>
+                            <option value="balanced" selected>Speed: Balanced</option>
+                            <option value="accurate">Speed: Accurate</option>
+                        </select>
+
+                        <select id="dubCloningOp" onchange="syncInputs()" style="display: none;" title="Voice Cloning Mode: 'Cloning: On' uses OpenVoice AI to match the original speaker's voice timbre. 'Cloning: Off' uses crisp studio base voice.">
+                            <option value="yes" selected>Cloning: On (OpenVoice)</option>
+                            <option value="no">Cloning: Off (Studio Base Voice)</option>
+                        </select>
+
+                        <select id="dubSpeedOp" onchange="syncInputs()" style="display: none;" title="Dubbing Pace Mode: 'Adaptive' adjusts speech speed to fit video scene timing. 'Natural Tempo' maintains natural human speaking pace.">
+                            <option value="adaptive" selected>Pace: Adaptive (Synced)</option>
+                            <option value="natural">Pace: Natural Tempo</option>
+                        </select>
                         
                         <div style="flex-grow: 1;"></div>
                         
@@ -294,10 +323,17 @@
                 <div class="card-header">Job Injection Gateway</div>
                 <div class="card-body" style="display: flex; align-items: center;">
                     <div class="gateway-container">
-                        <input type="text" id="targetPath" placeholder="Absolute Input Path (.mp4, .wav, .txt)" oninput="syncInputs()">
+                        <input type="text" id="targetPath" placeholder="Absolute Input Path (.mp4, .wav, .txt)" oninput="syncInputs()" title="Input File Path: Provide an absolute path to your source media file (.mp4, .wav, .txt).">
                         
                         <div class="gateway-controls">
-                            <select id="targetOutFormat" onchange="syncInputs()">
+                            <select id="sourceLang" onchange="syncInputs()" title="Source Language: Original language spoken in the source media. Selecting the known language (English, Hindi, or Marathi) bypasses Whisper auto-detection to prevent timeouts.">
+                                <option value="" selected>Auto Detect</option>
+                                <option value="en">English (en)</option>
+                                <option value="hi">Hindi (hi)</option>
+                                <option value="mr">Marathi (mr)</option>
+                            </select>
+
+                            <select id="targetOutFormat" onchange="syncInputs()" title="Output Media Format: Desired final output format. Choose Video (.mp4, .mov), Audio (.wav, .mp3), or Text (.srt, .txt).">
                                 <optgroup label="Video Formats">
                                     <option value="mp4" selected>Video (.mp4)</option>
                                     <option value="mov">Video (.mov)</option>
@@ -321,20 +357,42 @@
                                 </optgroup>
                             </select>
 
-                            <select id="targetLang" onchange="syncInputs()">
+                            <select id="targetLang" onchange="syncInputs()" title="Target Language: Language into which the speech will be translated and dubbed (English, Hindi, or Marathi).">
                                 <option value="en">Eng (en)</option>
                                 <option value="hi" selected>Hin (hi)</option>
                                 <option value="mr">Mar (mr)</option>
                             </select>
 
-                            <select id="subtitleMode" onchange="syncInputs()">
+                            <select id="subtitleMode" onchange="syncInputs()" title="Subtitle Mode: Controls subtitle burning on the output video: No Subtitles, Burn Target Subtitles (translated), or Burn Source Subtitles.">
                                 <option value="none" selected>No Subtitles</option>
                                 <option value="target">Burn Target Subtitles</option>
                                 <option value="source">Burn Source Subtitles</option>
                             </select>
 
-                            <input type="number" id="minSpk" placeholder="Min Spk" min="1" max="20" style="width: 90px; display: none;" title="Minimum Speakers" oninput="syncInputs()">
-                            <input type="number" id="maxSpk" placeholder="Max Spk" min="1" max="20" style="width: 90px; display: none;" title="Maximum Speakers" oninput="syncInputs()">
+                            <select id="numSpeakers" onchange="syncInputs()" style="display: none;" title="Number of Speakers: Expected speaker count. Selecting '1 Speaker' activates an ultra-fast bypass mode (< 1s execution).">
+                                <option value="auto" selected>Speakers: Auto</option>
+                                <option value="1">1 Speaker</option>
+                                <option value="2">2 Speakers</option>
+                                <option value="3">3 Speakers</option>
+                                <option value="4">4 Speakers</option>
+                                <option value="5">5 Speakers</option>
+                            </select>
+
+                            <select id="transcriptionQuality" onchange="syncInputs()" style="display: none;" title="Transcription Quality: Whisper ASR decoding search depth. Fast (2x faster decoding), Balanced (default), or Accurate (deep beam search).">
+                                <option value="fast">Speed: Fast</option>
+                                <option value="balanced" selected>Speed: Balanced</option>
+                                <option value="accurate">Speed: Accurate</option>
+                            </select>
+
+                            <select id="dubCloning" onchange="syncInputs()" style="display: none;" title="Voice Cloning Mode: 'Cloning: On' uses OpenVoice AI to match the original speaker's voice timbre. 'Cloning: Off' uses crisp studio base voice.">
+                                <option value="yes" selected>Cloning: On (OpenVoice)</option>
+                                <option value="no">Cloning: Off (Studio Base Voice)</option>
+                            </select>
+
+                            <select id="dubSpeed" onchange="syncInputs()" style="display: none;" title="Dubbing Pace Mode: 'Adaptive' adjusts speech speed to fit video scene timing. 'Natural Tempo' maintains natural human speaking pace.">
+                                <option value="adaptive" selected>Pace: Adaptive (Synced)</option>
+                                <option value="natural">Pace: Natural Tempo</option>
+                            </select>
                             
                             <div style="flex-grow: 1;"></div>
                             
@@ -420,8 +478,14 @@
             let isText = textExts.includes(ext);
 
             let showSpk = (isAudio || isVideo) ? 'inline-block' : 'none';
-            document.querySelectorAll('#minSpk, #maxSpk, #minSpkOp, #maxSpkOp').forEach(el => {
+            document.querySelectorAll('#numSpeakers, #numSpeakersOp').forEach(el => {
                 if(el) el.style.display = showSpk;
+            });
+
+            // Show transcription quality, cloning mode, and dubbing pace for audio/video inputs
+            let showAudioVideo = (isAudio || isVideo) ? 'inline-block' : 'none';
+            document.querySelectorAll('#transcriptionQuality, #transcriptionQualityOp, #dubCloning, #dubCloningOp, #dubSpeed, #dubSpeedOp').forEach(el => {
+                if(el) el.style.display = showAudioVideo;
             });
 
             selects.forEach(select => {
@@ -476,26 +540,38 @@
         function syncInputs() {
             const isOp = document.getElementById('modeSwitch').checked;
             const rawPath = isOp ? document.getElementById('targetPathOp').value : document.getElementById('targetPath').value;
+            const srcLang = isOp ? document.getElementById('sourceLangOp').value : document.getElementById('sourceLang').value;
             const lang = isOp ? document.getElementById('targetLangOp').value : document.getElementById('targetLang').value;
             const outFormat = isOp ? document.getElementById('targetOutFormatOp').value : document.getElementById('targetOutFormat').value;
-            const minS = isOp ? document.getElementById('minSpkOp').value : document.getElementById('minSpk').value;
-            const maxS = isOp ? document.getElementById('maxSpkOp').value : document.getElementById('maxSpk').value;
+            const numSpk = isOp ? document.getElementById('numSpeakersOp').value : document.getElementById('numSpeakers').value;
             const subMode = isOp ? document.getElementById('subtitleModeOp').value : document.getElementById('subtitleMode').value;
+            const tquality = isOp ? document.getElementById('transcriptionQualityOp').value : document.getElementById('transcriptionQuality').value;
+            const dClone = isOp ? document.getElementById('dubCloningOp').value : document.getElementById('dubCloning').value;
+            const dSpeed = isOp ? document.getElementById('dubSpeedOp').value : document.getElementById('dubSpeed').value;
             
             document.getElementById('targetPath').value = rawPath;
             document.getElementById('targetPathOp').value = rawPath;
+            document.getElementById('sourceLang').value = srcLang;
+            document.getElementById('sourceLangOp').value = srcLang;
             document.getElementById('targetLang').value = lang;
             document.getElementById('targetLangOp').value = lang;
             document.getElementById('targetOutFormat').value = outFormat;
             document.getElementById('targetOutFormatOp').value = outFormat;
             
-            if (document.getElementById('minSpk')) document.getElementById('minSpk').value = minS;
-            if (document.getElementById('minSpkOp')) document.getElementById('minSpkOp').value = minS;
-            if (document.getElementById('maxSpk')) document.getElementById('maxSpk').value = maxS;
-            if (document.getElementById('maxSpkOp')) document.getElementById('maxSpkOp').value = maxS;
+            if (document.getElementById('numSpeakers')) document.getElementById('numSpeakers').value = numSpk;
+            if (document.getElementById('numSpeakersOp')) document.getElementById('numSpeakersOp').value = numSpk;
             
             if (document.getElementById('subtitleMode')) document.getElementById('subtitleMode').value = subMode;
             if (document.getElementById('subtitleModeOp')) document.getElementById('subtitleModeOp').value = subMode;
+
+            if (document.getElementById('transcriptionQuality')) document.getElementById('transcriptionQuality').value = tquality;
+            if (document.getElementById('transcriptionQualityOp')) document.getElementById('transcriptionQualityOp').value = tquality;
+
+            if (document.getElementById('dubCloning')) document.getElementById('dubCloning').value = dClone;
+            if (document.getElementById('dubCloningOp')) document.getElementById('dubCloningOp').value = dClone;
+
+            if (document.getElementById('dubSpeed')) document.getElementById('dubSpeed').value = dSpeed;
+            if (document.getElementById('dubSpeedOp')) document.getElementById('dubSpeedOp').value = dSpeed;
 
             let cleanPath = rawPath.replace(/['"]/g, '').trim();
             applyRegexRules(cleanPath);
@@ -511,37 +587,51 @@
                 currentRenderedJob = null;
             }
 
+            const allDropdowns = ['sourceLang', 'sourceLangOp', 'targetLang', 'targetLangOp', 'targetOutFormat', 'targetOutFormatOp', 'numSpeakers', 'numSpeakersOp', 'subtitleMode', 'subtitleModeOp', 'transcriptionQuality', 'transcriptionQualityOp', 'dubCloning', 'dubCloningOp', 'dubSpeed', 'dubSpeedOp'];
             if (cleanPath.startsWith("JOB-")) {
-                let dropdowns = ['targetLang', 'targetLangOp', 'targetOutFormat', 'targetOutFormatOp', 'minSpk', 'maxSpk', 'minSpkOp', 'maxSpkOp', 'subtitleMode', 'subtitleModeOp'];
-                dropdowns.forEach(id => {
+                allDropdowns.forEach(id => {
                     let el = document.getElementById(id);
                     if(el) el.disabled = true;
                 });
             } else {
-                let dropdowns = ['targetLang', 'targetLangOp', 'targetOutFormat', 'targetOutFormatOp', 'minSpk', 'maxSpk', 'minSpkOp', 'maxSpkOp', 'subtitleMode', 'subtitleModeOp'];
-                dropdowns.forEach(id => {
+                allDropdowns.forEach(id => {
                     let el = document.getElementById(id);
                     if(el) el.disabled = false;
                 });
             }
+
+            // 🛡️ Mandatory Input Path Lock on Execute Buttons
+            const isValidPath = cleanPath !== '' && !cleanPath.startsWith("JOB-");
+            document.querySelectorAll('.btn-exec').forEach(btn => {
+                if (btn.innerText === 'Execute') {
+                    btn.disabled = !isValidPath;
+                    btn.title = isValidPath ? "Execute Job" : "Please provide a valid input path (.mp4, .wav, .txt)";
+                }
+            });
         }
 
         function updateButtonStates(state) {
             let isRunning = (state === 'running' || state === 'paused');
             let isCompleted = (state === 'completed');
             
-            let dropdowns = ['targetLang', 'targetLangOp', 'targetOutFormat', 'targetOutFormatOp', 'minSpk', 'maxSpk', 'minSpkOp', 'maxSpkOp', 'subtitleMode', 'subtitleModeOp'];
+            let dropdowns = ['sourceLang', 'sourceLangOp', 'targetLang', 'targetLangOp', 'targetOutFormat', 'targetOutFormatOp', 'numSpeakers', 'numSpeakersOp', 'subtitleMode', 'subtitleModeOp', 'transcriptionQuality', 'transcriptionQualityOp', 'dubCloning', 'dubCloningOp', 'dubSpeed', 'dubSpeedOp'];
             dropdowns.forEach(id => {
                 let el = document.getElementById(id);
                 if(el) el.disabled = (isRunning || isCompleted);
             });
 
+            const isOp = document.getElementById('modeSwitch') ? document.getElementById('modeSwitch').checked : false;
+            const rawPath = isOp ? (document.getElementById('targetPathOp') ? document.getElementById('targetPathOp').value : '') : (document.getElementById('targetPath') ? document.getElementById('targetPath').value : '');
+            const cleanPath = rawPath.replace(/['"]/g, '').trim();
+            const isValidPath = cleanPath !== '' && !cleanPath.startsWith("JOB-");
+
             document.querySelectorAll('.btn-exec').forEach(btn => {
                 if (state === 'idle') {
                     btn.style.display = 'block';
-                    btn.disabled = false;
+                    btn.disabled = !isValidPath;
                     btn.innerText = 'Execute';
                     btn.className = 'btn-exec';
+                    btn.title = isValidPath ? "Execute Job" : "Please provide a valid input path (.mp4, .wav, .txt)";
                 } else if (state === 'completed') {
                     btn.style.display = 'block';
                     btn.disabled = true;
@@ -755,10 +845,13 @@
             let path = isOp ? document.getElementById('targetPathOp').value.trim() : document.getElementById('targetPath').value.trim();
             path = path.replace(/['"]/g, ''); 
             
+            const srcLang = isOp ? document.getElementById("sourceLangOp").value : document.getElementById("sourceLang").value;
             const lang = isOp ? document.getElementById("targetLangOp").value : document.getElementById("targetLang").value;
             const outFormat = isOp ? document.getElementById("targetOutFormatOp").value : document.getElementById("targetOutFormat").value;
-            const minSpk = isOp ? document.getElementById("minSpkOp").value : document.getElementById("minSpk").value;
-            const maxSpk = isOp ? document.getElementById("maxSpkOp").value : document.getElementById("maxSpk").value;
+            const numSpk = isOp ? document.getElementById("numSpeakersOp").value : document.getElementById("numSpeakers").value;
+            const tquality = isOp ? document.getElementById("transcriptionQualityOp").value : document.getElementById("transcriptionQuality").value;
+            const dClone = isOp ? document.getElementById("dubCloningOp").value : document.getElementById("dubCloning").value;
+            const dSpeed = isOp ? document.getElementById("dubSpeedOp").value : document.getElementById("dubSpeed").value;
             const subMode = isOp ? document.getElementById("subtitleModeOp").value : document.getElementById("subtitleMode").value;
 
             if (!path) return;
@@ -777,7 +870,7 @@
             document.getElementById("opMediaPlayer").style.display = "none";
             currentRenderedJob = null;
             
-            window.go.main.App.SubmitJob(path, lang, outFormat, minSpk, maxSpk, subMode).then(jobId => {
+            window.go.main.App.SubmitJob(path, srcLang, lang, outFormat, numSpk, tquality, dClone, dSpeed, subMode).then(jobId => {
                 selectJob(jobId, "RUNNING"); 
             }).catch(err => {
                 alert(err);

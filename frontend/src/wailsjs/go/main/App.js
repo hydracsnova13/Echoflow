@@ -22,6 +22,6 @@ export function StopJob(arg1) {
   return window['go']['main']['App']['StopJob'](arg1);
 }
 
-export function SubmitJob(arg1, arg2, arg3, arg4, arg5, arg6) {
-  return window['go']['main']['App']['SubmitJob'](arg1, arg2, arg3, arg4, arg5, arg6);
+export function SubmitJob(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9) {
+  return window['go']['main']['App']['SubmitJob'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9);
 }

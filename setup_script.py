@@ -7,6 +7,9 @@ import sys
 import subprocess
 import platform
 
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
+
 def get_venv_bin(env_dir, bin_name):
     scripts_path = os.path.join(env_dir, "Scripts", f"{bin_name}.exe")
     if os.path.exists(scripts_path):
@@ -114,8 +117,8 @@ setuptools<70
     req_core_file = os.path.join(envs_dir, "req_core.txt")
     req_tts_file = os.path.join(envs_dir, "req_tts.txt")
     
-    with open(req_core_file, "w") as f: f.write(core_reqs)
-    with open(req_tts_file, "w") as f: f.write(tts_reqs)
+    with open(req_core_file, "w", encoding="utf-8") as f: f.write(core_reqs)
+    with open(req_tts_file, "w", encoding="utf-8") as f: f.write(tts_reqs)
 
     print("\n⚙️ Installing packages into 'env_core' (Python 3.12)...")
     subprocess.check_call([pip_core, "install", "-r", req_core_file])
@@ -133,21 +136,75 @@ setuptools<70
     # 3. HUGGING FACE OFFLINE VERIFICATION
     # =========================================================
     print("\n📥 Verifying / Synchronizing Model Weights via HuggingFace Hub...")
+
+    hf_token = (
+        os.environ.get("HF_TOKEN") or
+        os.environ.get("HUGGING_FACE_HUB_TOKEN") or
+        os.environ.get("HUGGINGFACE_HUB_TOKEN")
+    )
+
+    if not hf_token:
+        # Check standard huggingface token file locations
+        for p in [
+            os.path.join(os.path.expanduser("~"), ".cache", "huggingface", "token"),
+            os.path.join(os.path.expanduser("~"), ".huggingface", "token")
+        ]:
+            if os.path.exists(p):
+                try:
+                    with open(p, "r", encoding="utf-8") as tf:
+                        t = tf.read().strip()
+                        if t:
+                            hf_token = t
+                            break
+                except Exception:
+                    pass
+
+    if hf_token:
+        masked = hf_token[:6] + "..." + hf_token[-4:] if len(hf_token) > 10 else "***"
+        print(f"🔑 HuggingFace Access Token detected ({masked}).")
+        sys.stdout.flush()
+        try:
+            user_input = input("   Press Enter to keep this token, or paste a new HF Token (hf_...): ").strip()
+            if user_input:
+                hf_token = user_input
+                os.environ["HF_TOKEN"] = hf_token
+                os.environ["HUGGING_FACE_HUB_TOKEN"] = hf_token
+        except (EOFError, KeyboardInterrupt):
+            pass
+    else:
+        print("\n🔑 HuggingFace Access Token Required for Gated Pyannote Models")
+        print("   (Accept conditions at https://huggingface.co/pyannote/speaker-diarization-3.1)")
+        print("   Enter your token below, or press Enter to skip and continue without a token.")
+        sys.stdout.flush()
+        try:
+            user_input = input("👉 Enter your HF Token (hf_...) [Press Enter to skip]: ").strip()
+            if user_input:
+                hf_token = user_input
+                os.environ["HF_TOKEN"] = hf_token
+                os.environ["HUGGING_FACE_HUB_TOKEN"] = hf_token
+        except (EOFError, KeyboardInterrupt):
+            pass
+
     try:
         sync_script = f"""
-from huggingface_hub import snapshot_download, login
-from huggingface_hub.utils import HfFolder
 import os
+import sys
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
+from pathlib import Path
+from huggingface_hub import snapshot_download, login
 
-hf_token = os.environ.get("HF_TOKEN") or HfFolder.get_token()
+hf_token = {repr(hf_token)} or os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+
 if hf_token:
-    print("🔑 Hugging Face Access Token detected.")
-    login(token=hf_token)
+    print("🔑 Logging in to Hugging Face Hub...")
+    try:
+        login(token=hf_token)
+    except Exception as login_err:
+        print(f"⚠️ Note during HF login: {{login_err}}")
 else:
-    print("⚠️  WARNING: No HF_TOKEN environment variable or cached token found!")
-    print("ℹ️  Note: Pyannote models (speaker-diarization-3.1 & segmentation-3.0) are gated.")
-    print("   Please set export HF_TOKEN='your_token' (or set HF_TOKEN=your_token on Windows)")
-    print("   and accept conditions on https://huggingface.co/pyannote/speaker-diarization-3.1")
+    print("⚠️  WARNING: No HF_TOKEN provided!")
+    print("ℹ️  Note: Pyannote models (speaker-diarization-3.1 & segmentation-3.0) require an HF token.")
 
 models_dir = r"{models_dir}"
 models = {{
@@ -162,19 +219,23 @@ models = {{
 for repo_id, folder_name in models.items():
     print(f"Syncing {{repo_id}}...")
     try:
-        snapshot_download(repo_id=repo_id, local_dir=os.path.join(models_dir, folder_name), local_dir_use_symlinks=False)
+        snapshot_download(repo_id=repo_id, local_dir=os.path.join(models_dir, folder_name), local_dir_use_symlinks=False, token=hf_token)
     except Exception as err:
         print(f"❌ Failed to download {{repo_id}}: {{err}}")
         if "pyannote" in repo_id:
             print("   👉 Pyannote models require an HF Access Token with accepted user conditions.")
-            print("      Set HF_TOKEN environment variable and accept terms on HuggingFace.")
 
 print("Syncing myshell-ai/OpenVoiceV2 (Converter only)...")
-snapshot_download(repo_id="myshell-ai/OpenVoiceV2", allow_patterns=["converter/*"], local_dir=os.path.join(models_dir, "offline_openvoice"), local_dir_use_symlinks=False)
+try:
+    snapshot_download(repo_id="myshell-ai/OpenVoiceV2", allow_patterns=["converter/*"], local_dir=os.path.join(models_dir, "offline_openvoice"), local_dir_use_symlinks=False, token=hf_token)
+except Exception as err:
+    print(f"❌ Failed to download OpenVoiceV2: {{err}}")
 """
         sync_file = os.path.join(envs_dir, "sync_models.py")
-        with open(sync_file, "w") as f: f.write(sync_script)
-        subprocess.check_call([python_core, sync_file])
+        with open(sync_file, "w", encoding="utf-8") as f: f.write(sync_script)
+        run_env = os.environ.copy()
+        run_env["PYTHONIOENCODING"] = "utf-8"
+        subprocess.check_call([python_core, sync_file], env=run_env)
     except Exception as e:
         print(f"❌ Error downloading huggingface models: {e}")
 

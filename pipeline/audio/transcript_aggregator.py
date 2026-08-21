@@ -2,6 +2,9 @@ import sys
 import os
 import json
 
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
+
 def resolve_speaker(seg_start: float, seg_end: float, diarization_map: list) -> str:
     if not diarization_map:
         return "SPEAKER_00"
@@ -53,9 +56,21 @@ def aggregate_transcripts(input_path: str, output_dir: str):
         if d.startswith("bucket_") and os.path.isdir(os.path.join(audio_chunker_dir, d))
     ])
 
+    from collections import Counter
+
+    # Check job_config.json for explicit source_language
+    configured_source_lang = None
+    config_path = os.path.join(job_root, "job_config.json")
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, "r", encoding="utf-8") as cfg:
+                configured_source_lang = json.load(cfg).get("source_language")
+        except Exception:
+            pass
+
     master_timeline = []
     full_text_parts = []
-    detected_language = "en"
+    language_counts = Counter()
 
     for b_dir in buckets:
         t_file = os.path.join(b_dir, "transcript.json")
@@ -63,8 +78,10 @@ def aggregate_transcripts(input_path: str, output_dir: str):
             try:
                 with open(t_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    detected_language = data.get("language", detected_language)
+                    b_lang = data.get("language")
                     segments = data.get("segments", []) or data.get("chunks", [])
+                    if segments and b_lang:
+                        language_counts[b_lang] += 1
 
                     for seg in segments:
                         raw_text = seg.get("text", "").strip()
@@ -87,11 +104,36 @@ def aggregate_transcripts(input_path: str, output_dir: str):
 
     master_timeline.sort(key=lambda x: x["start"])
 
+    # Deduplicate overlapping segments from chunk boundary overlaps
+    deduped_timeline = []
+    for seg in master_timeline:
+        if not deduped_timeline:
+            deduped_timeline.append(seg)
+        else:
+            prev = deduped_timeline[-1]
+            # Check for timestamp collision or identical text overlap
+            if abs(seg["start"] - prev["start"]) < 0.8 or (seg["start"] < prev["end"] and seg["text"].strip().lower() == prev["text"].strip().lower()):
+                if len(seg["text"]) > len(prev["text"]):
+                    deduped_timeline[-1] = seg # Keep longer/more complete segment
+                continue
+            deduped_timeline.append(seg)
+
+    full_text_parts = [s["text"] for s in deduped_timeline]
+
+    if configured_source_lang:
+        final_language = configured_source_lang
+    elif language_counts:
+        final_language = language_counts.most_common(1)[0][0]
+    else:
+        final_language = "mr"
+
+    print(f"🔍 [TranscriptAggregator] Final Aggregated Source Language: {final_language}", flush=True)
+
     payload = {
         "job_id": os.path.basename(job_root),
-        "language": detected_language,
+        "language": final_language,
         "full_transcript": " ".join(full_text_parts),
-        "timeline": master_timeline
+        "timeline": deduped_timeline
     }
 
     os.makedirs(output_dir, exist_ok=True)
