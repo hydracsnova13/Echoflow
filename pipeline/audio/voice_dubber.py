@@ -202,7 +202,6 @@ def run_fast_offline_dubber(input_target, output_dir):
             dubbing_voice_cloning = c.get("dubbing_voice_cloning", "yes").lower()
             dubbing_speed_mode = c.get("dubbing_speed_mode", "adaptive").lower()
 
-    # 🛡️ THE FIX 1: Safely bypass if output is pure text
     text_formats = ["srt", "txt", "json", "text"]
     if output_format in text_formats or (media_type == "text" and output_format in text_formats):
         print(f"⏩ [VoiceDubber] Bypassing Voice Dubbing for '{output_format}' output mode.", flush=True)
@@ -231,7 +230,6 @@ def run_fast_offline_dubber(input_target, output_dir):
         if os.path.exists(fallback_chunk):
             speaker_files["SPEAKER_00"] = fallback_chunk
 
-    # Force bypass tone conversion if voice cloning is explicitly disabled in job_config
     if dubbing_voice_cloning == "no":
         print("⏩ [VoiceDubber] Voice Cloning disabled in config. Using pure Studio Base Voice (MMS).", flush=True)
         has_references = False
@@ -267,6 +265,14 @@ def run_fast_offline_dubber(input_target, output_dir):
     subs = pysrt.open(srt_path)
     
     total_length_ms = (subs[-1].end.ordinal) + 2000 if len(subs) > 0 else 10000
+    original_audio_path = os.path.join(job_root, "out_MetadataProfiler", "audio.wav")
+    if os.path.exists(original_audio_path):
+        try:
+            orig_seg = AudioSegment.from_wav(original_audio_path)
+            total_length_ms = max(total_length_ms, len(orig_seg))
+        except Exception:
+            pass
+
     master_timeline = AudioSegment.silent(duration=total_length_ms)
     default_speaker = list(speaker_files.keys())[0] if has_references else "SPEAKER_00"
     
@@ -275,33 +281,67 @@ def run_fast_offline_dubber(input_target, output_dir):
     ov_temp_dir = os.path.join(output_dir, "ov_temp")
     os.makedirs(ov_temp_dir, exist_ok=True)
 
+    print("🔗 [VoiceDubber] Consolidating timeline for optimal dubbing...", flush=True)
+    consolidated = []
+    for sub in subs:
+        raw_text = sub.text.replace('\n', ' ')
+        match = re.match(r"\[(.*?)\]\s*(.*)", raw_text)
+        if match:
+            speaker = match.group(1)
+            text = match.group(2).strip()
+        else:
+            speaker = default_speaker
+            text = raw_text.strip()
+
+        cleaned_text = sanitize_text_for_tts(text)
+
+        if not cleaned_text:
+            if consolidated:
+                consolidated[-1]["end_ms"] = sub.end.ordinal
+            continue
+
+        if consolidated and consolidated[-1]["speaker"] == speaker:
+            prev_entry = consolidated[-1]
+            gap_ms = sub.start.ordinal - prev_entry["end_ms"]
+            total_dur_ms = sub.end.ordinal - prev_entry["start_ms"]
+            if 0 <= gap_ms <= 350 and total_dur_ms <= 8500:
+                prev_entry["end_ms"] = sub.end.ordinal
+                prev_entry["text"] = f"{prev_entry['text']} {cleaned_text}".strip()
+                continue
+
+        consolidated.append({
+            "speaker": speaker,
+            "text": cleaned_text,
+            "start_ms": sub.start.ordinal,
+            "end_ms": sub.end.ordinal,
+        })
+
+    print(f"   📊 Consolidated {len(subs)} subtitle entries → {len(consolidated)} voiced segments", flush=True)
+
     print("🎤 [VoiceDubber] Starting voice processing...", flush=True)
     
     target_se_cache = {}
     source_se_cache = {}
 
-    for i, sub in enumerate(subs):
-        raw_text = sub.text.replace('\n', ' ')
-        start_time_ms = sub.start.ordinal
-        target_duration_ms = sub.end.ordinal - sub.start.ordinal
+    for i, entry in enumerate(consolidated):
+        current_speaker = entry["speaker"]
+        spoken_text = entry["text"]
+        start_time_ms = entry["start_ms"]
         
-        match = re.match(r"\[(.*?)\]\s*(.*)", raw_text)
-        if match:
-            current_speaker = match.group(1)
-            spoken_text = match.group(2).strip()
-        else:
-            current_speaker = default_speaker
-            spoken_text = raw_text.strip()
-            
-        spoken_text = sanitize_text_for_tts(spoken_text)
-        if not spoken_text:
-            continue
+        raw_target_duration_ms = entry["end_ms"] - entry["start_ms"]
+
+        # 🛡️ THE FIX: Relaxed Dynamic Pacing Limiter
+        # Humans speak ~2.5 words per second max when rushed, but ~1.5 to 2 normally. 
+        # We increase the multiplier to 500ms + 2.0s padding so valid speech is never chopped off.
+        word_count = len(spoken_text.split())
+        estimated_max_speech_ms = (word_count * 500) + 2000 
+        target_duration_ms = min(raw_target_duration_ms, estimated_max_speech_ms)
 
         ref_wav = speaker_files.get(current_speaker, speaker_files.get(default_speaker)) if has_references else None
         if has_references and (not ref_wav or not os.path.exists(ref_wav)):
             ref_wav = list(speaker_files.values())[0] if speaker_files else None
 
-        print(f"   [{i+1}/{len(subs)}] Voice: [{current_speaker}] | Text: '{spoken_text[:35]}...'", flush=True)
+        print(f"   [{i+1}/{len(consolidated)}] Voice: [{current_speaker}] | Allowed Duration: {target_duration_ms}ms | Text: '{spoken_text[:45]}...'", flush=True)
         
         base_audio_path = os.path.join(output_dir, f"temp_base_{current_speaker}_{i}.wav")
         chunk_output = os.path.join(output_dir, f"final_chunk_{current_speaker}_{i}.wav")
@@ -315,7 +355,6 @@ def run_fast_offline_dubber(input_target, output_dir):
             generated_segment = None
             if has_references and ref_wav and os.path.exists(ref_wav):
                 try:
-                    # Cache source_se for the base MMS voice to avoid re-extracting on every line
                     if target_language not in source_se_cache:
                         source_se, _ = se_extractor.get_se(base_audio_path, tone_color_converter, target_dir=ov_temp_dir, vad=True)
                         source_se_cache[target_language] = source_se
@@ -344,21 +383,20 @@ def run_fast_offline_dubber(input_target, output_dir):
                 generated_segment = AudioSegment.from_wav(base_audio_path)
 
             if generated_segment is not None and len(generated_segment) > 0:
-                if i + 1 < len(subs):
-                    max_allowed_ms = max(target_duration_ms, subs[i+1].start.ordinal - start_time_ms - 50)
+                if i + 1 < len(consolidated):
+                    max_allowed_ms = max(target_duration_ms, consolidated[i+1]["start_ms"] - start_time_ms - 50)
                 else:
                     max_allowed_ms = target_duration_ms + 3000
 
                 max_speed = 1.15 if dubbing_speed_mode == "natural" else 1.45
                 synced_segment = stretch_audio(generated_segment, target_duration_ms, max_allowed_ms, max_speed=max_speed)
-                # Normalize peak loudness to -3.0 dBFS for uniform audio mastering
                 if synced_segment.max_dBFS > -100:
                     change_in_dBFS = -3.0 - synced_segment.max_dBFS
                     synced_segment = synced_segment.apply_gain(change_in_dBFS)
 
                 master_timeline = master_timeline.overlay(synced_segment, position=start_time_ms)
             else:
-                print(f"⚠️ Warning: Could not generate audio clip for line {i+1}", flush=True)
+                print(f"⚠️ Warning: Could not generate audio clip for segment {i+1}", flush=True)
             
         except Exception as e:
             import traceback

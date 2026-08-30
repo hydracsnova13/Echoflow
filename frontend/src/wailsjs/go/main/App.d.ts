@@ -3,6 +3,14 @@
 import {broker} from '../models';
 import {main} from '../models';
 
+export function ApproveCandidateTerms(arg1:string):Promise<string>;
+
+export function GetAllPendingCandidateTerms():Promise<string>;
+
+export function GetDomainDictionary():Promise<string>;
+
+export function GetJobCandidateTerms(arg1:string):Promise<string>;
+
 export function GetJobOutputPath(arg1:string):Promise<Record<string, string>>;
 
 export function GetPipelineManifest():Promise<Record<string, broker.PipelineComponent>>;
@@ -10,6 +18,8 @@ export function GetPipelineManifest():Promise<Record<string, broker.PipelineComp
 export function GetRecentCheckpoints():Promise<Array<main.JobSummary>>;
 
 export function ResumeJob(arg1:string):Promise<void>;
+
+export function SaveDomainDictionary(arg1:string):Promise<string>;
 
 export function StopJob(arg1:string):Promise<void>;
 

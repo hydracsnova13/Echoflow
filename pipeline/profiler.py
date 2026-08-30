@@ -64,11 +64,16 @@ def profile_and_split(input_file, output_dir):
     audio_wav_path = os.path.join(output_dir, "audio.wav")
     if ext in ['.wav', '.mp3', '.flac', '.m4a', '.aac']:
         print(f"🎵 [Profiler] Audio input detected. Bypassing video analysis...", flush=True)
+        audio_filter = "highpass=f=60,lowpass=f=7600"
         try:
-            subprocess.run([ffmpeg_exe, "-y", "-i", target_file, "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", audio_wav_path], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run([ffmpeg_exe, "-y", "-i", target_file, "-af", audio_filter, "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", audio_wav_path], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception as e:
-            print(f"[Profiler] ⚠️ FFmpeg audio conversion failed: {e}. Copying raw file.", flush=True)
-            shutil.copyfile(target_file, audio_wav_path)
+            print(f"[Profiler] ⚠️ FFmpeg audio conversion with filter failed: {e}. Trying simple conversion.", flush=True)
+            try:
+                subprocess.run([ffmpeg_exe, "-y", "-i", target_file, "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", audio_wav_path], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception as e2:
+                print(f"[Profiler] ⚠️ FFmpeg audio conversion failed: {e2}. Copying raw file.", flush=True)
+                shutil.copyfile(target_file, audio_wav_path)
 
         with open(os.path.join(output_dir, "timecodes.json"), "w") as f:
             json.dump({"fps": 30.0, "total_frames": 0, "width": 0, "height": 0, "timecodes": []}, f, indent=2)
@@ -103,7 +108,11 @@ def profile_and_split(input_file, output_dir):
     try:
         print(f"[Profiler] Splitting audio/video streams...", flush=True)
         subprocess.run([ffmpeg_exe, "-y", "-i", target_file, "-an", "-c:v", "copy", video_mute_path], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.run([ffmpeg_exe, "-y", "-i", target_file, "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", audio_wav_path], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        audio_filter = "highpass=f=60,lowpass=f=7600"
+        try:
+            subprocess.run([ffmpeg_exe, "-y", "-i", target_file, "-vn", "-af", audio_filter, "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", audio_wav_path], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            subprocess.run([ffmpeg_exe, "-y", "-i", target_file, "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", audio_wav_path], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception as e:
         print(f"[Profiler] Fallback triggered. Copying video directly.", flush=True)
         shutil.copyfile(target_file, video_mute_path)

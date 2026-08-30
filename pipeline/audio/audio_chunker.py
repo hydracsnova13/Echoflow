@@ -3,6 +3,7 @@ import os
 import json
 import soundfile as sf
 import numpy as np
+import scipy.signal as signal
 
 def safe_rename(src, dst):
     import time
@@ -13,6 +14,32 @@ def safe_rename(src, dst):
         except OSError:
             time.sleep(0.2)
     os.rename(src, dst)
+
+def enhance_and_resample(audio: np.ndarray, orig_sr: int, target_sr: int = 16000) -> np.ndarray:
+    if len(audio) == 0:
+        return audio
+    
+    # 1. High-fidelity Polyphase Resampling (avoids nearest-neighbor aliasing jitter)
+    if orig_sr != target_sr:
+        gcd = np.gcd(orig_sr, target_sr)
+        up = target_sr // gcd
+        down = orig_sr // gcd
+        audio = signal.resample_poly(audio, up, down)
+    
+    # 2. 4th-order Butterworth Bandpass filter (80 Hz - 7500 Hz)
+    sos = signal.butter(4, [80, 7500], btype='bandpass', fs=target_sr, output='sos')
+    filtered = signal.sosfilt(sos, audio)
+
+    # 3. RMS Speech Loudness Normalization to -20 dBFS
+    rms = np.sqrt(np.mean(filtered**2))
+    if rms > 1e-5:
+        target_rms = 0.12
+        gain = min(target_rms / rms, 4.0)
+        filtered = filtered * gain
+
+    # 4. Soft peak limiting
+    filtered = np.clip(filtered, -1.0, 1.0)
+    return filtered.astype(np.float32)
 
 def run_audio_chunker(input_path, output_workspace_dir):
     os.makedirs(output_workspace_dir, exist_ok=True)
@@ -33,12 +60,8 @@ def run_audio_chunker(input_path, output_workspace_dir):
         audio = audio.mean(axis=1)
 
     target_rate = 16000
-    if sample_rate != target_rate:
-        duration = len(audio) / sample_rate
-        target_length = int(duration * target_rate)
-        positions = np.linspace(0, len(audio) - 1, target_length)
-        audio = audio[np.floor(positions).astype(int)]
-        sample_rate = target_rate
+    audio = enhance_and_resample(audio, sample_rate, target_rate)
+    sample_rate = target_rate
 
     total_samples = len(audio)
     total_seconds = total_samples / sample_rate
@@ -75,7 +98,7 @@ def run_audio_chunker(input_path, output_workspace_dir):
         if end_sec >= total_seconds:
             break
 
-    print(f"[AudioChunker] ✅ Created {current_bucket_idx} audio buckets.", flush=True)
+    print(f"[AudioChunker] ✅ Created {current_bucket_idx} audio buckets with high-grade anti-aliased audio.", flush=True)
 
 if __name__ == "__main__":
     if len(sys.argv) >= 3:

@@ -88,6 +88,10 @@ models/offline_openvoice/
 models/offline_pyannote_model/
 models/pyannote_segmentation/
 models/wav2lip-onnx-256/
+models/indictrans2-en-indic-1B/
+models/indictrans2-indic-en-1B/
+models/indictrans2-indic-indic-1B/
+models/whisper-medium/
 
 # Keep only the registry config (auto-generated, but useful for reference)
 !models/registry.json

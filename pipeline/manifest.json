@@ -35,7 +35,7 @@
         "depends_on": [
             "AudioChunker"
         ],
-        "model_ref": "WhisperSmallDaemon",
+        "model_ref": "WhisperMediumDaemon",
         "script": "pipeline/audio/whisper_transcriber.py",
         "accepted_inputs": [
             "directory"

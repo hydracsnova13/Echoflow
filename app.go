@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -279,4 +280,250 @@ func (a *App) GetJobOutputPath(jobID string) map[string]string {
 	}
 	res["Error"] = "Final media not found"
 	return res
+}
+
+func (a *App) GetDomainDictionary() (string, error) {
+	dictPath := filepath.Join(a.MM.ProjectRoot, "pipeline", "config", "domain_dictionary.json")
+	bytes, err := os.ReadFile(dictPath)
+	if err != nil {
+		return "", fmt.Errorf("could not read domain dictionary: %v", err)
+	}
+	return string(bytes), nil
+}
+
+func (a *App) SaveDomainDictionary(dictJSON string) (string, error) {
+	var rawData map[string]interface{}
+	if err := json.Unmarshal([]byte(dictJSON), &rawData); err != nil {
+		return "", fmt.Errorf("invalid JSON syntax: %v", err)
+	}
+
+	// Validate English Smoothing Regex Rules
+	if enRules, ok := rawData["spoken_english_smoothing"].([]interface{}); ok {
+		for idx, ruleObj := range enRules {
+			if ruleMap, ok := ruleObj.(map[string]interface{}); ok {
+				pat, _ := ruleMap["pattern"].(string)
+				if pat == "" {
+					return "", fmt.Errorf("English rule #%d has an empty pattern", idx+1)
+				}
+				if _, err := regexp.Compile(pat); err != nil {
+					return "", fmt.Errorf("invalid regex pattern in English rule #%d ('%s'): %v", idx+1, pat, err)
+				}
+			}
+		}
+	}
+
+	// Validate Hindi Smoothing Regex Rules
+	if hiRules, ok := rawData["spoken_hindi_smoothing"].([]interface{}); ok {
+		for idx, ruleObj := range hiRules {
+			if ruleMap, ok := ruleObj.(map[string]interface{}); ok {
+				pat, _ := ruleMap["pattern"].(string)
+				if pat == "" {
+					return "", fmt.Errorf("Hindi rule #%d has an empty pattern", idx+1)
+				}
+				if _, err := regexp.Compile(pat); err != nil {
+					return "", fmt.Errorf("invalid regex pattern in Hindi rule #%d ('%s'): %v", idx+1, pat, err)
+				}
+			}
+		}
+	}
+
+	// Validate Marathi Smoothing Regex Rules
+	if mrRules, ok := rawData["spoken_marathi_smoothing"].([]interface{}); ok {
+		for idx, ruleObj := range mrRules {
+			if ruleMap, ok := ruleObj.(map[string]interface{}); ok {
+				pat, _ := ruleMap["pattern"].(string)
+				if pat == "" {
+					return "", fmt.Errorf("Marathi rule #%d has an empty pattern", idx+1)
+				}
+				if _, err := regexp.Compile(pat); err != nil {
+					return "", fmt.Errorf("invalid regex pattern in Marathi rule #%d ('%s'): %v", idx+1, pat, err)
+				}
+			}
+		}
+	}
+
+	dictPath := filepath.Join(a.MM.ProjectRoot, "pipeline", "config", "domain_dictionary.json")
+	backupPath := dictPath + ".bak"
+
+	// Create backup before writing
+	if existingBytes, err := os.ReadFile(dictPath); err == nil {
+		os.WriteFile(backupPath, existingBytes, 0644)
+	}
+
+	formattedBytes, err := json.MarshalIndent(rawData, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("failed to format JSON: %v", err)
+	}
+
+	if err := os.WriteFile(dictPath, formattedBytes, 0644); err != nil {
+		return "", fmt.Errorf("failed to write file: %v", err)
+	}
+
+	a.MM.LogToUI("📖 Domain Dictionary updated & persisted successfully!")
+	return "OK", nil
+}
+
+func (a *App) GetJobCandidateTerms(jobID string) (string, error) {
+	jobID = strings.Trim(strings.TrimSpace(jobID), "\"'")
+	candidatePath := filepath.Join(a.MM.ProjectRoot, "workspace", "jobs", jobID, "out_NMTTranslator", "candidate_terms.json")
+	if _, err := os.Stat(candidatePath); os.IsNotExist(err) {
+		return "[]", nil
+	}
+	bytes, err := os.ReadFile(candidatePath)
+	if err != nil {
+		return "[]", nil
+	}
+	return string(bytes), nil
+}
+
+func (a *App) GetAllPendingCandidateTerms() (string, error) {
+	dictPath := filepath.Join(a.MM.ProjectRoot, "pipeline", "config", "domain_dictionary.json")
+	existingTerms := make(map[string]bool)
+
+	if dictBytes, err := os.ReadFile(dictPath); err == nil {
+		var rawData map[string]interface{}
+		if err := json.Unmarshal(dictBytes, &rawData); err == nil {
+			if asrMap, ok := rawData["asr_corrections"].(map[string]interface{}); ok {
+				for k := range asrMap {
+					existingTerms[strings.TrimSpace(k)] = true
+				}
+			}
+			if domainMap, ok := rawData["domain_terms"].(map[string]interface{}); ok {
+				for k := range domainMap {
+					existingTerms[strings.TrimSpace(k)] = true
+				}
+			}
+		}
+	}
+
+	jobsDir := filepath.Join(a.MM.ProjectRoot, "workspace", "jobs")
+	entries, err := os.ReadDir(jobsDir)
+	if err != nil {
+		return "[]", nil
+	}
+
+	var allCandidates []map[string]interface{}
+	seenTerms := make(map[string]bool)
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		candFile := filepath.Join(jobsDir, entry.Name(), "out_NMTTranslator", "candidate_terms.json")
+		if bytes, err := os.ReadFile(candFile); err == nil {
+			var list []map[string]interface{}
+			if err := json.Unmarshal(bytes, &list); err == nil {
+				for _, item := range list {
+					orig, _ := item["original"].(string)
+					origTrimmed := strings.TrimSpace(orig)
+					if origTrimmed != "" && !existingTerms[origTrimmed] && !seenTerms[origTrimmed] {
+						seenTerms[origTrimmed] = true
+						item["job_id"] = entry.Name()
+						allCandidates = append(allCandidates, item)
+					}
+				}
+			}
+		}
+	}
+
+	resBytes, err := json.Marshal(allCandidates)
+	if err != nil {
+		return "[]", nil
+	}
+	return string(resBytes), nil
+}
+
+type ApprovedTermCandidate struct {
+	Original    string `json:"original"`
+	Replacement string `json:"replacement"`
+	Type        string `json:"type"` // "asr_corrections" or "domain_terms"
+}
+
+func (a *App) ApproveCandidateTerms(termsJSON string) (string, error) {
+	var candidates []ApprovedTermCandidate
+	if err := json.Unmarshal([]byte(termsJSON), &candidates); err != nil {
+		return "", fmt.Errorf("invalid terms JSON: %v", err)
+	}
+
+	if len(candidates) == 0 {
+		return "No terms provided", nil
+	}
+
+	dictPath := filepath.Join(a.MM.ProjectRoot, "pipeline", "config", "domain_dictionary.json")
+	dictBytes, err := os.ReadFile(dictPath)
+	if err != nil {
+		return "", fmt.Errorf("could not read dictionary: %v", err)
+	}
+
+	var rawData map[string]interface{}
+	if err := json.Unmarshal(dictBytes, &rawData); err != nil {
+		return "", fmt.Errorf("could not parse dictionary: %v", err)
+	}
+
+	asrMap, _ := rawData["asr_corrections"].(map[string]interface{})
+	if asrMap == nil {
+		asrMap = make(map[string]interface{})
+		rawData["asr_corrections"] = asrMap
+	}
+
+	domainMap, _ := rawData["domain_terms"].(map[string]interface{})
+	if domainMap == nil {
+		domainMap = make(map[string]interface{})
+		rawData["domain_terms"] = domainMap
+	}
+
+	approvedKeys := make(map[string]bool)
+	addedCount := 0
+	for _, term := range candidates {
+		orig := strings.TrimSpace(term.Original)
+		repl := strings.TrimSpace(term.Replacement)
+		if orig == "" || repl == "" {
+			continue
+		}
+		if term.Type == "domain_terms" {
+			domainMap[orig] = repl
+		} else {
+			asrMap[orig] = repl
+		}
+		approvedKeys[orig] = true
+		addedCount++
+	}
+
+	formattedBytes, err := json.MarshalIndent(rawData, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("failed to format JSON: %v", err)
+	}
+
+	backupPath := dictPath + ".bak"
+	os.WriteFile(backupPath, dictBytes, 0644)
+	os.WriteFile(dictPath, formattedBytes, 0644)
+
+	// Clean up approved terms from all job candidate_terms.json files
+	jobsDir := filepath.Join(a.MM.ProjectRoot, "workspace", "jobs")
+	if entries, err := os.ReadDir(jobsDir); err == nil {
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			candFile := filepath.Join(jobsDir, entry.Name(), "out_NMTTranslator", "candidate_terms.json")
+			if cBytes, err := os.ReadFile(candFile); err == nil {
+				var list []map[string]interface{}
+				if err := json.Unmarshal(cBytes, &list); err == nil {
+					var remaining []map[string]interface{}
+					for _, item := range list {
+						orig, _ := item["original"].(string)
+						if !approvedKeys[strings.TrimSpace(orig)] {
+							remaining = append(remaining, item)
+						}
+					}
+					if newCBytes, err := json.MarshalIndent(remaining, "", "  "); err == nil {
+						os.WriteFile(candFile, newCBytes, 0644)
+					}
+				}
+			}
+		}
+	}
+
+	a.MM.LogToUI(fmt.Sprintf("✨ Approved %d technical term(s) added to Domain Dictionary!", addedCount))
+	return fmt.Sprintf("%d terms approved", addedCount), nil
 }

@@ -1,9 +1,11 @@
 package pipeline
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -390,14 +392,28 @@ func (d *DAGExecutor) ExecuteCPUCommand(jobID string, compName string, meta brok
 	pythonExec := d.MemoryManager.GetPythonExec(meta.EnvName)
 
 	cmd := exec.Command(pythonExec, scriptPath, inputFile, outputDir)
-	cmd.Env = append(os.Environ(), "PYTHONIOENCODING=utf-8")
+	cmd.Env = append(os.Environ(), "PYTHONIOENCODING=utf-8", "PYTHONUNBUFFERED=1")
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 
 	var outBuf bytes.Buffer
-	cmd.Stdout = &outBuf
-	cmd.Stderr = &outBuf
+	pr, pw := io.Pipe()
+	mw := io.MultiWriter(&outBuf, pw)
+	cmd.Stdout = mw
+	cmd.Stderr = mw
+
+	logDone := make(chan struct{})
+	go func() {
+		defer close(logDone)
+		scanner := bufio.NewScanner(pr)
+		scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+		for scanner.Scan() {
+			d.MemoryManager.LogToUI(scanner.Text())
+		}
+	}()
 
 	if err := cmd.Start(); err != nil {
+		_ = pw.Close()
+		<-logDone
 		d.MemoryManager.LogToUI(fmt.Sprintf("❌ %s failed to start! Error: %v", compName, err))
 		job.UpdateGlobalTask(compName, broker.StateError)
 		return
@@ -407,6 +423,8 @@ func (d *DAGExecutor) ExecuteCPUCommand(jobID string, compName string, meta brok
 	estRAM := d.MemoryManager.TrackCPUStart(compName, pid)
 
 	err := cmd.Wait()
+	_ = pw.Close()
+	<-logDone
 	d.MemoryManager.TrackCPUEnd(compName, pid, estRAM)
 
 	pythonLogs := strings.TrimSpace(outBuf.String())

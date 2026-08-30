@@ -35,7 +35,7 @@ def setup_model_garden():
     os.makedirs(bin_dir, exist_ok=True)
 
     print("=========================================================")
-    print("🚀 Initializing Echoflow Dual-Python Clean Setup")
+    print("🚀 Initializing EcoFlow Dual-Python Setup (IndicTrans2 & Whisper Medium)")
     print("=========================================================\n")
 
     env_core = os.path.join(envs_dir, "env_core")
@@ -68,30 +68,32 @@ def setup_model_garden():
 
     print("\n⬆️ Upgrading build tools (pip, setuptools, wheel)...")
     subprocess.check_call([python_core, "-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"])
-    
-    # 🛡️ THE FIX: Restrict setuptools to <70 in env_tts to preserve pkg_resources for OpenVoice
     subprocess.check_call([python_tts, "-m", "pip", "install", "--upgrade", "pip", "setuptools<70", "wheel"])
 
     # =========================================================
-    # 2. REQUIREMENTS INJECTION
+    # 2. REQUIREMENTS INJECTION (Strictly Pinned for IndicTrans2 & Torch 2.2)
     # =========================================================
-    core_reqs = """faster-whisper>=1.0.0
+    core_reqs = """numpy<2.0.0
+torch>=2.2.0,<2.3.0
+torchaudio>=2.2.0,<2.3.0
+faster-whisper>=1.0.0
 silero-vad>=5.0.0
 onnxruntime>=1.16.0
-torch>=2.2.0
-torchaudio>=2.2.0
 ffmpeg-python>=0.2.0
 soundfile>=0.12.1
-librosa>=0.10.0
+librosa>=0.10.0,<0.11.0
+scipy>=1.11.0,<1.14.0
 pydantic>=2.7.0
 loguru>=0.7.0
 typer>=0.12.0
 pyttsx3>=2.90
 psutil
-opencv-python>=4.11.0.86
+opencv-python>=4.10.0.84
 mediapipe
-transformers>=4.38.2
+transformers==4.46.1
 sentencepiece>=0.1.99
+sacremoses>=0.1.1
+indictranstoolkit>=1.1.1
 huggingface-hub>=0.20.3
 """
     
@@ -121,6 +123,7 @@ setuptools<70
     with open(req_tts_file, "w", encoding="utf-8") as f: f.write(tts_reqs)
 
     print("\n⚙️ Installing packages into 'env_core' (Python 3.12)...")
+    subprocess.check_call([pip_core, "install", "numpy<2.0.0"])
     subprocess.check_call([pip_core, "install", "-r", req_core_file])
 
     print("\n⚙️ Installing strict PyTorch CPU wheels into 'env_tts' (Python 3.10)...")
@@ -133,7 +136,7 @@ setuptools<70
     subprocess.check_call([pip_tts, "install", "--no-deps", "https://github.com/myshell-ai/OpenVoice/archive/refs/heads/main.zip"])
 
     # =========================================================
-    # 3. HUGGING FACE OFFLINE VERIFICATION
+    # 3. HUGGING FACE MODEL WEIGHT SYNCHRONIZATION
     # =========================================================
     print("\n📥 Verifying / Synchronizing Model Weights via HuggingFace Hub...")
 
@@ -144,7 +147,6 @@ setuptools<70
     )
 
     if not hf_token:
-        # Check standard huggingface token file locations
         for p in [
             os.path.join(os.path.expanduser("~"), ".cache", "huggingface", "token"),
             os.path.join(os.path.expanduser("~"), ".huggingface", "token")
@@ -172,9 +174,7 @@ setuptools<70
         except (EOFError, KeyboardInterrupt):
             pass
     else:
-        print("\n🔑 HuggingFace Access Token Required for Gated Pyannote Models")
-        print("   (Accept conditions at https://huggingface.co/pyannote/speaker-diarization-3.1)")
-        print("   Enter your token below, or press Enter to skip and continue without a token.")
+        print("\n🔑 HuggingFace Access Token Required for Gated IndicTrans2 & Pyannote Models")
         sys.stdout.flush()
         try:
             user_input = input("👉 Enter your HF Token (hf_...) [Press Enter to skip]: ").strip()
@@ -203,31 +203,45 @@ if hf_token:
     except Exception as login_err:
         print(f"⚠️ Note during HF login: {{login_err}}")
 else:
-    print("⚠️  WARNING: No HF_TOKEN provided!")
-    print("ℹ️  Note: Pyannote models (speaker-diarization-3.1 & segmentation-3.0) require an HF token.")
+    print("⚠️ WARNING: No HF_TOKEN provided! Gated models will fail if access is restricted.")
 
 models_dir = r"{models_dir}"
 models = {{
-    "Systran/faster-whisper-small": "whisper-small",
-    "facebook/nllb-200-distilled-600M": "nllb-200-distilled-600M",
+    "Systran/faster-whisper-medium": "whisper-medium",
+    "ai4bharat/indictrans2-indic-en-1B": "indictrans2-indic-en-1B",
+    "ai4bharat/indictrans2-en-indic-1B": "indictrans2-en-indic-1B",
+    "ai4bharat/indictrans2-indic-indic-1B": "indictrans2-indic-indic-1B",
     "pyannote/speaker-diarization-3.1": "offline_pyannote_model",
     "pyannote/segmentation-3.0": "pyannote_segmentation",
     "facebook/mms-tts-hin": "offline_mms_model/hin",
     "facebook/mms-tts-mar": "offline_mms_model/mar",
     "facebook/mms-tts-eng": "offline_mms_model/eng"
 }}
+
 for repo_id, folder_name in models.items():
     print(f"Syncing {{repo_id}}...")
+    target_path = os.path.join(models_dir, folder_name)
     try:
-        snapshot_download(repo_id=repo_id, local_dir=os.path.join(models_dir, folder_name), local_dir_use_symlinks=False, token=hf_token)
+        snapshot_download(
+            repo_id=repo_id,
+            local_dir=target_path,
+            local_dir_use_symlinks=False,
+            token=hf_token,
+            ignore_patterns=["*.msgpack", "*.h5", "*.ot", "coreml/*"]
+        )
+        print(f"✅ {{folder_name}} is ready.")
     except Exception as err:
         print(f"❌ Failed to download {{repo_id}}: {{err}}")
-        if "pyannote" in repo_id:
-            print("   👉 Pyannote models require an HF Access Token with accepted user conditions.")
 
 print("Syncing myshell-ai/OpenVoiceV2 (Converter only)...")
 try:
-    snapshot_download(repo_id="myshell-ai/OpenVoiceV2", allow_patterns=["converter/*"], local_dir=os.path.join(models_dir, "offline_openvoice"), local_dir_use_symlinks=False, token=hf_token)
+    snapshot_download(
+        repo_id="myshell-ai/OpenVoiceV2",
+        allow_patterns=["converter/*"],
+        local_dir=os.path.join(models_dir, "offline_openvoice"),
+        local_dir_use_symlinks=False,
+        token=hf_token
+    )
 except Exception as err:
     print(f"❌ Failed to download OpenVoiceV2: {{err}}")
 """
@@ -271,7 +285,10 @@ except Exception as err:
     # =========================================================
     print("\nGenerating hardware registry...")
     registry = {
-        "WhisperSmallDaemon": {"model_path": "models/whisper-small", "framework": "faster-whisper", "estimated_ram_mb": 1200.0},
+        "WhisperMediumDaemon": {"model_path": "models/whisper-medium", "framework": "faster-whisper", "estimated_ram_mb": 2500.0},
+        "IndicTrans2IndicEn": {"model_path": "models/indictrans2-indic-en-1B", "framework": "transformers", "estimated_ram_mb": 4200.0},
+        "IndicTrans2EnIndic": {"model_path": "models/indictrans2-en-indic-1B", "framework": "transformers", "estimated_ram_mb": 4200.0},
+        "IndicTrans2IndicIndic": {"model_path": "models/indictrans2-indic-indic-1B", "framework": "transformers", "estimated_ram_mb": 4200.0},
         "PyannoteDiarizerDaemon": {"model_path": "models/offline_pyannote_model", "framework": "pyannote", "estimated_ram_mb": 1000.0},
         "MMSTTSBase": {"model_path": "models/offline_mms_model", "framework": "transformers", "estimated_ram_mb": 1500.0},
         "OpenVoiceV2Daemon": {"model_path": "models/offline_openvoice", "framework": "openvoice", "estimated_ram_mb": 2500.0}
@@ -282,7 +299,7 @@ except Exception as err:
     manifest = {
         "MetadataProfiler": {"env_name": "env_core", "domain": "cpu", "execution_mode": "sequential", "depends_on": [], "script": "pipeline/profiler.py", "accepted_inputs": [".txt", ".json", ".srt", ".mp4", ".wav", ".mp3"], "produces": "directory"},
         "AudioChunker": {"env_name": "env_core", "domain": "cpu", "execution_mode": "sequential", "depends_on": ["MetadataProfiler"], "script": "pipeline/audio/audio_chunker.py", "accepted_inputs": ["directory"], "produces": "directory"},
-        "WhisperTranscriber": {"env_name": "env_core", "domain": "ram", "execution_mode": "chunked", "depends_on": ["AudioChunker"], "model_ref": "WhisperSmallDaemon", "script": "pipeline/audio/whisper_transcriber.py", "accepted_inputs": ["directory"], "produces": ".json"},
+        "WhisperTranscriber": {"env_name": "env_core", "domain": "ram", "execution_mode": "chunked", "depends_on": ["AudioChunker"], "model_ref": "WhisperMediumDaemon", "script": "pipeline/audio/whisper_transcriber.py", "accepted_inputs": ["directory"], "produces": ".json"},
         "SpeakerDiarizer": {"env_name": "env_tts", "domain": "cpu", "execution_mode": "sequential", "depends_on": ["MetadataProfiler"], "script": "pipeline/audio/speaker_diarizer.py", "accepted_inputs": ["directory", ".wav"], "produces": "directory"},
         "TranscriptAggregator": {"env_name": "env_core", "domain": "cpu", "execution_mode": "sequential", "depends_on": ["WhisperTranscriber", "SpeakerDiarizer"], "script": "pipeline/audio/transcript_aggregator.py", "accepted_inputs": ["directory"], "produces": ".json"},
         "NMTTranslator": {"env_name": "env_core", "domain": "cpu", "execution_mode": "sequential", "depends_on": ["TranscriptAggregator"], "script": "pipeline/audio/nmt_runner.py", "accepted_inputs": ["directory", ".json"], "produces": ".json, .srt"},
@@ -293,8 +310,8 @@ except Exception as err:
     with open(os.path.join(pipeline_dir, "manifest.json"), "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=4)
     
-    print("✅ pipeline/manifest.json updated.")
-    print("🎉 Echoflow Dual-Python Clean Setup Complete!")
+    print("✅ pipeline/manifest.json and models/registry.json updated.")
+    print("🎉 EcoFlow Dual-Python Setup Complete!")
 
 if __name__ == "__main__":
     setup_model_garden()

@@ -1,8 +1,23 @@
 {
-    "WhisperSmallDaemon": {
-        "model_path": "models/whisper-small",
+    "WhisperMediumDaemon": {
+        "model_path": "models/whisper-medium",
         "framework": "faster-whisper",
-        "estimated_ram_mb": 1200.0
+        "estimated_ram_mb": 2500.0
+    },
+    "IndicTrans2IndicEn": {
+        "model_path": "models/indictrans2-indic-en-1B",
+        "framework": "transformers",
+        "estimated_ram_mb": 4200.0
+    },
+    "IndicTrans2EnIndic": {
+        "model_path": "models/indictrans2-en-indic-1B",
+        "framework": "transformers",
+        "estimated_ram_mb": 4200.0
+    },
+    "IndicTrans2IndicIndic": {
+        "model_path": "models/indictrans2-indic-indic-1B",
+        "framework": "transformers",
+        "estimated_ram_mb": 4200.0
     },
     "PyannoteDiarizerDaemon": {
         "model_path": "models/offline_pyannote_model",
