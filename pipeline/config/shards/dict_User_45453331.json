@@ -1,0 +1,15 @@
+{
+  "_meta": {
+    "machine_id": "User_45453331",
+    "last_updated": 1788302018
+  },
+  "asr_corrections": {
+    "प्रछिक्षण": "प्रशिक्षण",
+    "संबदित": "संबंधित"
+  },
+  "domain_terms": {},
+  "asr_stem_patterns": [],
+  "spoken_english_smoothing": [],
+  "spoken_hindi_smoothing": [],
+  "spoken_marathi_smoothing": []
+}
