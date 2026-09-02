@@ -1,17 +1,70 @@
 {
   "_meta": {
     "machine_id": "User_45453331",
-    "last_updated": 1788306020
+    "last_updated": 1788307404
   },
   "asr_corrections": {
+    "अवारने": "उभारणे",
+    "इंट्री पॉल्ड़": "एंट्री पॉईंट (entry point)",
+    "उपयोक": "उपयोग",
+    "एक्स्पूचर": "एक्सपोजर (exposure)",
+    "कर्डे": "करडे",
+    "काडने": "काढणे",
+    "तायर": "तयार",
+    "तायार": "तयार",
     "निर्मन": "निर्माण",
     "प्रछिक्षण": "प्रशिक्षण",
+    "भोख़़ा": "बोकड",
+    "भोघडानची": "बोकडांची",
+    "मादि": "मादी",
+    "वेगवेगल": "वेगवेगळ्या",
     "संबदित": "संबंधित",
+    "सुक्ष्म": "सूक्ष्म",
+    "सुधारना": "सुधारना",
+    "स्वचिता": "स्वच्छता",
     "स्वच्यता": "स्वच्छता"
   },
-  "domain_terms": {},
+  "domain_terms": {
+    "कर्डे": "goat kids",
+    "खच्चीकरण": "castration",
+    "नर": "bucks",
+    "पशुसखी": "Pashusakhi (Community Animal Worker)",
+    "बकरी मित्र": "Bakri Mitra",
+    "मासा": "meat",
+    "लेंड्या": "dung samples",
+    "लेंदेंची": "dung"
+  },
   "asr_stem_patterns": [],
-  "spoken_english_smoothing": [],
+  "spoken_english_smoothing": [
+    {
+      "pattern": "\\bLenden's test, Vela's leaflet, and insect repellents..*Iroquois vaccine\\b",
+      "replacement": "Dung testing, scheduled deworming medicines, and preventive vaccines should be administered"
+    },
+    {
+      "pattern": "\\bsharing between epidemiologists and epidemiologists\\b",
+      "replacement": "sent to diagnostic laboratories"
+    },
+    {
+      "pattern": "\\bfrom Pasvun Sarvakshan to Sathi Wada Bangam Karne\\b",
+      "replacement": "to protect them, which requires proper shed construction"
+    },
+    {
+      "pattern": "\\bnesting practices\\b",
+      "replacement": "shed construction"
+    },
+    {
+      "pattern": "\\bwho pay taxes directly\\b",
+      "replacement": "must be arranged"
+    },
+    {
+      "pattern": "\\bbase booth\\b",
+      "replacement": "baseline"
+    },
+    {
+      "pattern": "\\bgoats, fish, and poultry\\b",
+      "replacement": "goats for meat"
+    }
+  ],
   "spoken_hindi_smoothing": [],
   "spoken_marathi_smoothing": []
 }
