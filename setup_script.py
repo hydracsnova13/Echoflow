@@ -6,6 +6,7 @@ import io
 import sys
 import subprocess
 import platform
+import uuid
 
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8')
@@ -29,6 +30,9 @@ def setup_model_garden():
     envs_dir = os.path.join(base_dir, ".envs")
     bin_dir = os.path.join(base_dir, "bin")
     
+    # Non-interactive mode: when launched from the UI, all inputs come via environment variables
+    noninteractive = os.environ.get("ECOFLOW_NONINTERACTIVE", "") == "1"
+    
     os.makedirs(models_dir, exist_ok=True)
     os.makedirs(pipeline_dir, exist_ok=True)
     os.makedirs(envs_dir, exist_ok=True)
@@ -36,16 +40,36 @@ def setup_model_garden():
 
     print("=========================================================")
     print("🚀 Initializing EcoFlow Dual-Python Setup (IndicTrans2 & Whisper Medium)")
-    print("=========================================================\n")
+    print("=========================================================")
+    print("PROGRESS:0%", flush=True)
 
     env_core = os.path.join(envs_dir, "env_core")
     env_tts = os.path.join(envs_dir, "env_tts")
 
-    # =========================================================
-    # 1. DUAL-VERSION VIRTUAL ENVIRONMENT PROVISIONING
-    # =========================================================
+    machine_id_file = os.path.join(base_dir, ".machine_id")
+    if not os.path.exists(machine_id_file):
+        print("👤 Local User Identity Setup")
+        sys.stdout.flush()
+        if noninteractive:
+            # In non-interactive mode, machine_id is pre-written by the Go backend
+            user_id = os.environ.get("ECOFLOW_MACHINE_ID", "user_" + uuid.uuid4().hex[:8])
+        else:
+            try:
+                user_input = input("👉 Enter a unique User/Machine ID (e.g., Village_1_Node): ").strip()
+                user_id = user_input if user_input else "user_" + uuid.uuid4().hex[:8]
+            except (EOFError, KeyboardInterrupt):
+                user_id = "user_" + uuid.uuid4().hex[:8]
+        
+        with open(machine_id_file, "w", encoding="utf-8") as f:
+            f.write(user_id)
+        print(f"✅ User ID '{user_id}' registered locally.\n")
+    else:
+        with open(machine_id_file, "r", encoding="utf-8") as f:
+            print(f"✅ Existing User ID detected: '{f.read().strip()}' (Skipping registration)\n")
+    print("PROGRESS:5%", flush=True)
+
     print("📦 Provisioning Isolated Environments...")
-    
+    print("PROGRESS:8%", flush=True)
     if not os.path.exists(env_core):
         print("   -> Creating 'env_core' using Python 3.12...")
         try:
@@ -67,12 +91,10 @@ def setup_model_garden():
     pip_tts = get_venv_bin(env_tts, "pip")
 
     print("\n⬆️ Upgrading build tools (pip, setuptools, wheel)...")
+    print("PROGRESS:15%", flush=True)
     subprocess.check_call([python_core, "-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"])
     subprocess.check_call([python_tts, "-m", "pip", "install", "--upgrade", "pip", "setuptools<70", "wheel"])
 
-    # =========================================================
-    # 2. REQUIREMENTS INJECTION (Strictly Pinned for IndicTrans2 & Torch 2.2)
-    # =========================================================
     core_reqs = """numpy<2.0.0
 torch>=2.2.0,<2.3.0
 torchaudio>=2.2.0,<2.3.0
@@ -123,21 +145,22 @@ setuptools<70
     with open(req_tts_file, "w", encoding="utf-8") as f: f.write(tts_reqs)
 
     print("\n⚙️ Installing packages into 'env_core' (Python 3.12)...")
+    print("PROGRESS:20%", flush=True)
     subprocess.check_call([pip_core, "install", "numpy<2.0.0"])
     subprocess.check_call([pip_core, "install", "-r", req_core_file])
 
     print("\n⚙️ Installing strict PyTorch CPU wheels into 'env_tts' (Python 3.10)...")
+    print("PROGRESS:35%", flush=True)
     subprocess.check_call([pip_tts, "install", "torch==2.1.2", "torchvision==0.16.2", "torchaudio==2.1.2", "--index-url", "https://download.pytorch.org/whl/cpu"])
     
     print("\n⚙️ Installing remaining packages into 'env_tts' (Python 3.10)...")
+    print("PROGRESS:45%", flush=True)
     subprocess.check_call([pip_tts, "install", "-r", req_tts_file])
 
     print("\n⚙️ Force Installing OpenVoice (Bypassing internal conflicts)...")
+    print("PROGRESS:55%", flush=True)
     subprocess.check_call([pip_tts, "install", "--no-deps", "https://github.com/myshell-ai/OpenVoice/archive/refs/heads/main.zip"])
 
-    # =========================================================
-    # 3. HUGGING FACE MODEL WEIGHT SYNCHRONIZATION
-    # =========================================================
     print("\n📥 Verifying / Synchronizing Model Weights via HuggingFace Hub...")
 
     hf_token = (
@@ -165,25 +188,32 @@ setuptools<70
         masked = hf_token[:6] + "..." + hf_token[-4:] if len(hf_token) > 10 else "***"
         print(f"🔑 HuggingFace Access Token detected ({masked}).")
         sys.stdout.flush()
-        try:
-            user_input = input("   Press Enter to keep this token, or paste a new HF Token (hf_...): ").strip()
-            if user_input:
-                hf_token = user_input
-                os.environ["HF_TOKEN"] = hf_token
-                os.environ["HUGGING_FACE_HUB_TOKEN"] = hf_token
-        except (EOFError, KeyboardInterrupt):
-            pass
+        if not noninteractive:
+            try:
+                user_input = input("   Press Enter to keep this token, or paste a new HF Token (hf_...): ").strip()
+                if user_input:
+                    hf_token = user_input
+                    os.environ["HF_TOKEN"] = hf_token
+                    os.environ["HUGGING_FACE_HUB_TOKEN"] = hf_token
+            except (EOFError, KeyboardInterrupt):
+                pass
+        else:
+            print("   [Non-interactive] Using pre-configured token.")
     else:
-        print("\n🔑 HuggingFace Access Token Required for Gated IndicTrans2 & Pyannote Models")
-        sys.stdout.flush()
-        try:
-            user_input = input("👉 Enter your HF Token (hf_...) [Press Enter to skip]: ").strip()
-            if user_input:
-                hf_token = user_input
-                os.environ["HF_TOKEN"] = hf_token
-                os.environ["HUGGING_FACE_HUB_TOKEN"] = hf_token
-        except (EOFError, KeyboardInterrupt):
-            pass
+        if not noninteractive:
+            print("\n🔑 HuggingFace Access Token Required for Gated IndicTrans2 & Pyannote Models")
+            sys.stdout.flush()
+            try:
+                user_input = input("👉 Enter your HF Token (hf_...) [Press Enter to skip]: ").strip()
+                if user_input:
+                    hf_token = user_input
+                    os.environ["HF_TOKEN"] = hf_token
+                    os.environ["HUGGING_FACE_HUB_TOKEN"] = hf_token
+            except (EOFError, KeyboardInterrupt):
+                pass
+        else:
+            print("⚠️ No HF_TOKEN provided in non-interactive mode. Gated models may fail.")
+    print("PROGRESS:60%", flush=True)
 
     try:
         sync_script = f"""
@@ -250,12 +280,10 @@ except Exception as err:
         run_env = os.environ.copy()
         run_env["PYTHONIOENCODING"] = "utf-8"
         subprocess.check_call([python_core, sync_file], env=run_env)
+        print("PROGRESS:85%", flush=True)
     except Exception as e:
         print(f"❌ Error downloading huggingface models: {e}")
 
-    # =========================================================
-    # 4. DOWNLOAD CENTRAL FFMPEG
-    # =========================================================
     ffmpeg_exe = os.path.join(bin_dir, "ffmpeg.exe" if os.name == 'nt' else "ffmpeg")
     if not os.path.exists(ffmpeg_exe):
         print(f"\n📥 Downloading FFmpeg Static Build for {platform.system()}...")
@@ -280,27 +308,26 @@ except Exception as err:
         except Exception as e:
             print(f"❌ Failed to download FFmpeg: {str(e)}")
 
-    # =========================================================
-    # 5. GENERATE REGISTRY & MANIFEST
-    # =========================================================
     print("\nGenerating hardware registry...")
+    print("PROGRESS:95%", flush=True)
     registry = {
-        "WhisperMediumDaemon": {"model_path": "models/whisper-medium", "framework": "faster-whisper", "estimated_ram_mb": 2500.0},
-        "IndicTrans2IndicEn": {"model_path": "models/indictrans2-indic-en-1B", "framework": "transformers", "estimated_ram_mb": 4200.0},
-        "IndicTrans2EnIndic": {"model_path": "models/indictrans2-en-indic-1B", "framework": "transformers", "estimated_ram_mb": 4200.0},
-        "IndicTrans2IndicIndic": {"model_path": "models/indictrans2-indic-indic-1B", "framework": "transformers", "estimated_ram_mb": 4200.0},
-        "PyannoteDiarizerDaemon": {"model_path": "models/offline_pyannote_model", "framework": "pyannote", "estimated_ram_mb": 1000.0},
-        "MMSTTSBase": {"model_path": "models/offline_mms_model", "framework": "transformers", "estimated_ram_mb": 1500.0},
-        "OpenVoiceV2Daemon": {"model_path": "models/offline_openvoice", "framework": "openvoice", "estimated_ram_mb": 2500.0}
+        "WhisperMediumDaemon": {"model_path": "models/whisper-medium", "framework": "faster-whisper"},
+        "IndicTrans2IndicEn": {"model_path": "models/indictrans2-indic-en-1B", "framework": "transformers"},
+        "IndicTrans2EnIndic": {"model_path": "models/indictrans2-en-indic-1B", "framework": "transformers"},
+        "IndicTrans2IndicIndic": {"model_path": "models/indictrans2-indic-indic-1B", "framework": "transformers"},
+        "PyannoteDiarizerDaemon": {"model_path": "models/offline_pyannote_model", "framework": "pyannote"},
+        "MMSTTSBase": {"model_path": "models/offline_mms_model", "framework": "transformers"},
+        "OpenVoiceV2Daemon": {"model_path": "models/offline_openvoice", "framework": "openvoice"}
     }
     with open(os.path.join(models_dir, "registry.json"), "w", encoding="utf-8") as f:
         json.dump(registry, f, indent=4)
     
+    # 🛡️ THE FIX: Rewired the DAG to be strictly sequential. Diarizer now waits for Whisper.
     manifest = {
         "MetadataProfiler": {"env_name": "env_core", "domain": "cpu", "execution_mode": "sequential", "depends_on": [], "script": "pipeline/profiler.py", "accepted_inputs": [".txt", ".json", ".srt", ".mp4", ".wav", ".mp3"], "produces": "directory"},
         "AudioChunker": {"env_name": "env_core", "domain": "cpu", "execution_mode": "sequential", "depends_on": ["MetadataProfiler"], "script": "pipeline/audio/audio_chunker.py", "accepted_inputs": ["directory"], "produces": "directory"},
         "WhisperTranscriber": {"env_name": "env_core", "domain": "ram", "execution_mode": "chunked", "depends_on": ["AudioChunker"], "model_ref": "WhisperMediumDaemon", "script": "pipeline/audio/whisper_transcriber.py", "accepted_inputs": ["directory"], "produces": ".json"},
-        "SpeakerDiarizer": {"env_name": "env_tts", "domain": "cpu", "execution_mode": "sequential", "depends_on": ["MetadataProfiler"], "script": "pipeline/audio/speaker_diarizer.py", "accepted_inputs": ["directory", ".wav"], "produces": "directory"},
+        "SpeakerDiarizer": {"env_name": "env_tts", "domain": "cpu", "execution_mode": "sequential", "depends_on": ["WhisperTranscriber"], "script": "pipeline/audio/speaker_diarizer.py", "accepted_inputs": ["directory", ".wav"], "produces": "directory"},
         "TranscriptAggregator": {"env_name": "env_core", "domain": "cpu", "execution_mode": "sequential", "depends_on": ["WhisperTranscriber", "SpeakerDiarizer"], "script": "pipeline/audio/transcript_aggregator.py", "accepted_inputs": ["directory"], "produces": ".json"},
         "NMTTranslator": {"env_name": "env_core", "domain": "cpu", "execution_mode": "sequential", "depends_on": ["TranscriptAggregator"], "script": "pipeline/audio/nmt_runner.py", "accepted_inputs": ["directory", ".json"], "produces": ".json, .srt"},
         "VoiceDubber": {"env_name": "env_tts", "domain": "cpu", "execution_mode": "sequential", "depends_on": ["NMTTranslator", "SpeakerDiarizer"], "script": "pipeline/audio/voice_dubber.py", "accepted_inputs": ["directory", ".srt"], "produces": ".wav"},
@@ -312,6 +339,7 @@ except Exception as err:
     
     print("✅ pipeline/manifest.json and models/registry.json updated.")
     print("🎉 EcoFlow Dual-Python Setup Complete!")
+    print("PROGRESS:100%", flush=True)
 
 if __name__ == "__main__":
     setup_model_garden()

@@ -7,8 +7,11 @@ import gc
 import threading
 import queue
 from faster_whisper import WhisperModel
+import multiprocessing
 
-num_cores = str(min(4, max(1, (os.cpu_count() or 4) - 2)))
+# 🚀 OPTIMIZED: Unleash full CPU power for sequential execution (leaves 1 core for OS)
+total_cores = multiprocessing.cpu_count() or 4
+num_cores = str(max(1, total_cores - 1))
 os.environ["OMP_NUM_THREADS"] = num_cores
 os.environ["OPENBLAS_NUM_THREADS"] = num_cores
 os.environ["MKL_NUM_THREADS"] = num_cores
@@ -69,7 +72,7 @@ def boot_daemon():
             local_model_path, 
             device="cpu", 
             compute_type="int8", 
-            cpu_threads=4,
+            cpu_threads=int(num_cores),
             num_workers=1,
             local_files_only=True
         )
@@ -146,14 +149,13 @@ def boot_daemon():
             target_lang_for_prompt = source_lang or "mr"
             init_prompt = DOMAIN_INITIAL_PROMPTS.get(target_lang_for_prompt, DOMAIN_INITIAL_PROMPTS.get("mr", ""))
 
-            # 🛡️ THE FIX: Relaxed VAD to prevent mid-sentence cuts
             vad_params = dict(
                 min_silence_duration_ms=800, 
                 min_speech_duration_ms=250,
                 speech_pad_ms=300
             )
 
-            # 🛡️ THE FIX: Forgiving thresholds so Whisper stops deleting noisy audio
+            # 🛡️ THE FIX: Aggressive hallucination suppression configuration applied
             segments, info = model.transcribe(
                 wav_path,
                 beam_size=beam_size,
@@ -164,10 +166,10 @@ def boot_daemon():
                 vad_filter=True, 
                 vad_parameters=vad_params,
                 condition_on_previous_text=False,
-                repetition_penalty=1.0,
-                no_repeat_ngram_size=0,
-                no_speech_threshold=0.6,
-                compression_ratio_threshold=2.4,
+                repetition_penalty=1.2,          # Penalize looping text
+                no_repeat_ngram_size=3,          # Break recurring 3-word chains
+                no_speech_threshold=0.5,         # Ignore low-confidence background noise earlier
+                compression_ratio_threshold=2.2, # Trigger fallback to lower temperatures on gibberish
                 log_prob_threshold=-1.0,
                 hallucination_silence_threshold=2.0
             )
@@ -185,7 +187,6 @@ def boot_daemon():
                     duration = seg.end - seg.start
                     word_count = len(cleaned_text.split())
                     
-                    # 🛡️ THE FIX: Only drop true mathematical impossibilities (15 seconds with <= 3 words)
                     if duration > 15.0 and word_count <= 3:
                         continue
                         

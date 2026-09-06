@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 type ExecutionState string
@@ -20,9 +21,11 @@ const (
 type JobStatus string
 
 const (
-	JobRunning JobStatus = "RUNNING"
-	JobPaused  JobStatus = "PAUSED"
-	JobDone    JobStatus = "COMPLETED"
+	JobRunning  JobStatus = "RUNNING"
+	JobPaused   JobStatus = "PAUSED"
+	JobDone     JobStatus = "COMPLETED"
+	JobAuditASR JobStatus = "AUDIT_ASR"
+	JobAuditNMT JobStatus = "AUDIT_NMT"
 )
 
 type ChunkState struct {
@@ -30,13 +33,15 @@ type ChunkState struct {
 }
 
 type JobManifest struct {
-	JobID       string                    `json:"job_id"`
-	Status      JobStatus                 `json:"status"`
-	SourceFile  string                    `json:"source_file"`
-	GlobalTasks map[string]ExecutionState `json:"global_tasks"`
-	Chunks      map[string]*ChunkState    `json:"chunks"`
-	Mu          sync.Mutex                `json:"-"`
-	manifestDir string                    `json:"-"`
+	JobID        string                    `json:"job_id"`
+	Status       JobStatus                 `json:"status"`
+	SourceFile   string                    `json:"source_file"`
+	AuditASRDone bool                      `json:"audit_asr_done"`
+	AuditNMTDone bool                      `json:"audit_nmt_done"`
+	GlobalTasks  map[string]ExecutionState `json:"global_tasks"`
+	Chunks       map[string]*ChunkState    `json:"chunks"`
+	Mu           sync.Mutex                `json:"-"`
+	manifestDir  string                    `json:"-"`
 }
 
 type CheckpointManager struct {
@@ -59,12 +64,14 @@ func (cm *CheckpointManager) InitializeJob(jobID, sourceFile, workspaceRoot stri
 	manifestPath := filepath.Join(jobDir, "manifest.json")
 
 	manifest := &JobManifest{
-		JobID:       jobID,
-		Status:      JobRunning,
-		SourceFile:  sourceFile,
-		GlobalTasks: make(map[string]ExecutionState),
-		Chunks:      make(map[string]*ChunkState),
-		manifestDir: jobDir,
+		JobID:        jobID,
+		Status:       JobRunning,
+		SourceFile:   sourceFile,
+		AuditASRDone: false,
+		AuditNMTDone: false,
+		GlobalTasks:  make(map[string]ExecutionState),
+		Chunks:       make(map[string]*ChunkState),
+		manifestDir:  jobDir,
 	}
 
 	if data, err := os.ReadFile(manifestPath); err == nil {
@@ -88,7 +95,14 @@ func (jm *JobManifest) Save() {
 	path := filepath.Join(jm.manifestDir, "manifest.json")
 	tmpPath := path + ".tmp"
 	os.WriteFile(tmpPath, data, 0644)
-	os.Rename(tmpPath, path)
+
+	// 🛡️ THE FIX: Retry mechanism to bypass Windows file locks caused by rapid UI polling
+	for i := 0; i < 10; i++ {
+		if err := os.Rename(tmpPath, path); err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 func (jm *JobManifest) UpdateGlobalTask(component string, state ExecutionState) {
@@ -115,8 +129,6 @@ func (jm *JobManifest) SetStatus(status JobStatus) {
 	jm.Save()
 }
 
-// 🛡️ ResetIncompleteTasks resets all non-completed tasks (RUNNING, QUEUED, ERROR) back to PENDING/unstarted
-// so that resuming a paused or crashed job will cleanly re-execute them.
 func (jm *JobManifest) ResetIncompleteTasks() {
 	jm.Mu.Lock()
 	defer jm.Mu.Unlock()
@@ -133,7 +145,9 @@ func (jm *JobManifest) ResetIncompleteTasks() {
 			}
 		}
 	}
-	jm.Status = JobRunning
+	if jm.Status != JobAuditASR && jm.Status != JobAuditNMT {
+		jm.Status = JobRunning
+	}
 }
 
 type StaleChunk struct {

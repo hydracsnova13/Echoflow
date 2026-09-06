@@ -13,7 +13,7 @@ import numpy as np
 from pathlib import Path
 from pydub import AudioSegment
 
-num_cores = min(4, os.cpu_count() or 4)
+num_cores = min(6, os.cpu_count() or 6)
 os.environ["OMP_NUM_THREADS"] = str(num_cores)
 os.environ["OPENBLAS_NUM_THREADS"] = str(num_cores)
 os.environ["MKL_NUM_THREADS"] = str(num_cores)

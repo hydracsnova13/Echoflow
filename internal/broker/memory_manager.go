@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -86,18 +87,20 @@ type MemoryManager struct {
 	PipelineDAG    map[string]PipelineComponent
 	MaxRAMMB       float64
 	CurrentRAMMB   float64
+	LiveRAMMode    bool
 	ActiveWorkers  []*WarmWorker
 	BootingWorkers map[string]int
 	mu             sync.Mutex
 	isEvaluating   int32
 	ProjectRoot    string
 	Checkpoints    *CheckpointManager
+	SyncManager    *GitSyncManager
 	RecentAlerts   []string
 	CompletedTasks int32
 	ctx            context.Context
 }
 
-func NewMemoryManager(maxRamMB float64, projectRoot string, cm *CheckpointManager) *MemoryManager {
+func NewMemoryManager(maxRamMB float64, projectRoot string, cm *CheckpointManager, sm *GitSyncManager) *MemoryManager {
 	mgr := &MemoryManager{
 		PendingBuckets: make(map[string][]BucketTask),
 		ModelRegistry:  make(map[string]ModelConfig),
@@ -105,11 +108,13 @@ func NewMemoryManager(maxRamMB float64, projectRoot string, cm *CheckpointManage
 		MaxRAMMB:       maxRamMB,
 		ProjectRoot:    projectRoot,
 		Checkpoints:    cm,
+		SyncManager:    sm,
 		BootingWorkers: make(map[string]int),
 		RecentAlerts:   make([]string, 0),
 	}
 	mgr.loadConfigs()
 	go mgr.startAutoScalerLoop()
+	go mgr.startRAMMonitorLoop()
 	return mgr
 }
 
@@ -122,6 +127,10 @@ func (m *MemoryManager) loadConfigs() {
 	if file, err := os.ReadFile(dagPath); err == nil {
 		json.Unmarshal(file, &m.PipelineDAG)
 	}
+}
+
+func (m *MemoryManager) ReloadConfigs() {
+	m.loadConfigs()
 }
 
 func (m *MemoryManager) GetPythonExec(envName string) string {
@@ -140,7 +149,38 @@ func (m *MemoryManager) GetPythonExec(envName string) string {
 	return scriptPath
 }
 
-// 🛡️ NEW: Real-time RAM Tracking for Sequential CPU Tasks
+// 🛡️ THE FIX: Added HideWindow properties to the wmic commands to suppress console flashes
+func (m *MemoryManager) startRAMMonitorLoop() {
+	ticker := time.NewTicker(2 * time.Second)
+	for range ticker.C {
+		cmdFree := exec.Command("wmic", "os", "get", "FreePhysicalMemory")
+		cmdFree.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+		freeOut, err1 := cmdFree.Output()
+
+		cmdTot := exec.Command("wmic", "os", "get", "TotalVisibleMemorySize")
+		cmdTot.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+		totOut, err2 := cmdTot.Output()
+
+		if err1 == nil && err2 == nil {
+			freeLines := strings.Split(strings.TrimSpace(string(freeOut)), "\n")
+			totLines := strings.Split(strings.TrimSpace(string(totOut)), "\n")
+
+			if len(freeLines) >= 2 && len(totLines) >= 2 {
+				freeKB, errF := strconv.ParseFloat(strings.TrimSpace(freeLines[len(freeLines)-1]), 64)
+				totKB, errT := strconv.ParseFloat(strings.TrimSpace(totLines[len(totLines)-1]), 64)
+
+				if errF == nil && errT == nil && totKB > 0 {
+					m.mu.Lock()
+					m.LiveRAMMode = true
+					m.MaxRAMMB = totKB / 1024.0
+					m.CurrentRAMMB = (totKB - freeKB) / 1024.0
+					m.mu.Unlock()
+				}
+			}
+		}
+	}
+}
+
 func (m *MemoryManager) TrackCPUStart(comp string, pid int) float64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -155,14 +195,16 @@ func (m *MemoryManager) TrackCPUStart(comp string, pid int) float64 {
 			estRAM = 1000.0
 		case "NMTTranslator":
 			estRAM = 1500.0
-		case "VoiceDubber":
+		case "WhisperTranscriber", "VoiceDubber":
 			estRAM = 2500.0
 		case "MetadataProfiler", "AudioChunker", "TranscriptAggregator":
 			estRAM = 200.0
 		}
 	}
 
-	m.CurrentRAMMB += estRAM
+	if !m.LiveRAMMode {
+		m.CurrentRAMMB += estRAM
+	}
 
 	worker := &WarmWorker{
 		PID:          pid,
@@ -180,9 +222,11 @@ func (m *MemoryManager) TrackCPUEnd(comp string, pid int, estRAM float64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	m.CurrentRAMMB -= estRAM
-	if m.CurrentRAMMB < 0 {
-		m.CurrentRAMMB = 0
+	if !m.LiveRAMMode {
+		m.CurrentRAMMB -= estRAM
+		if m.CurrentRAMMB < 0 {
+			m.CurrentRAMMB = 0
+		}
 	}
 
 	var retained []*WarmWorker
@@ -214,8 +258,6 @@ func (m *MemoryManager) PushBucket(task BucketTask) {
 	m.PendingBuckets[task.Component] = append(m.PendingBuckets[task.Component], task)
 }
 
-// PushBucketPriority inserts a task at the FRONT of the queue.
-// Used for re-queuing failed chunks so they fail-fast on persistent issues.
 func (m *MemoryManager) PushBucketPriority(task BucketTask) {
 	job := m.Checkpoints.GetJob(task.JobID)
 	if job != nil && job.Status == JobPaused {
@@ -339,10 +381,11 @@ func (m *MemoryManager) evaluateQueues() {
 
 func (m *MemoryManager) spawnWorkerDynamic(comp string, meta PipelineComponent) *WarmWorker {
 	estRAM := m.ModelRegistry[meta.ModelRef].EstimatedRamMB
-	m.CurrentRAMMB += estRAM
+	if !m.LiveRAMMode {
+		m.CurrentRAMMB += estRAM
+	}
 
 	pythonExec := m.GetPythonExec(meta.EnvName)
-
 	cmd := exec.Command(pythonExec, filepath.Join(m.ProjectRoot, meta.Script))
 	cmd.Env = append(os.Environ(), "PYTHONIOENCODING=utf-8")
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
@@ -387,9 +430,11 @@ func (m *MemoryManager) spawnWorkerDynamic(comp string, meta PipelineComponent) 
 	}
 
 	if handshakeFound {
-		correction := actualRamMB - estRAM
-		m.CurrentRAMMB += correction
-		m.LogToUI(fmt.Sprintf("🚀 [%s] Booted via %s. OS RAM: %.1f MB", comp, meta.ModelRef, actualRamMB))
+		if !m.LiveRAMMode {
+			correction := actualRamMB - estRAM
+			m.CurrentRAMMB += correction
+		}
+		m.LogToUI(fmt.Sprintf("🚀 [%s] Booted via %s. Model RAM: %.1f MB", comp, meta.ModelRef, actualRamMB))
 
 		worker := &WarmWorker{
 			PID:         cmd.Process.Pid,
@@ -405,11 +450,8 @@ func (m *MemoryManager) spawnWorkerDynamic(comp string, meta PipelineComponent) 
 		go func() {
 			for errScanner.Scan() {
 				txt := strings.ToLower(errScanner.Text())
-				if !strings.Contains(txt, "xnnpack") &&
-					!strings.Contains(txt, "inference_feedback_manager") &&
-					!strings.Contains(txt, "created tensorflow lite") &&
-					!strings.Contains(txt, "clearcut") &&
-					!strings.Contains(txt, "source location trace") &&
+				if !strings.Contains(txt, "xnnpack") && !strings.Contains(txt, "inference_feedback_manager") &&
+					!strings.Contains(txt, "created tensorflow lite") && !strings.Contains(txt, "clearcut") &&
 					!strings.Contains(txt, "failed_precondition") {
 					m.LogToUI(fmt.Sprintf("⚠️ [%s] STDERR: %s", comp, errScanner.Text()))
 				}
@@ -419,7 +461,9 @@ func (m *MemoryManager) spawnWorkerDynamic(comp string, meta PipelineComponent) 
 	}
 
 	m.LogToUI(fmt.Sprintf("❌ [%s] Daemon failed to send valid handshake.", comp))
-	m.CurrentRAMMB -= estRAM
+	if !m.LiveRAMMode {
+		m.CurrentRAMMB -= estRAM
+	}
 	time.Sleep(2 * time.Second)
 	return nil
 }
@@ -494,7 +538,6 @@ func (m *MemoryManager) executeTask(worker *WarmWorker, task BucketTask) {
 		close(doneChan)
 	}()
 
-	// Adaptive timeout: cold-start (first task on daemon) gets more time
 	timeout := 10 * time.Minute
 	if worker.TaskCount <= 1 {
 		timeout = 25 * time.Minute
@@ -513,7 +556,9 @@ func (m *MemoryManager) executeTask(worker *WarmWorker, task BucketTask) {
 	}
 
 	m.mu.Lock()
-	m.CurrentRAMMB -= worker.ActualRamMB
+	if !m.LiveRAMMode {
+		m.CurrentRAMMB -= worker.ActualRamMB
+	}
 	for i, w := range m.ActiveWorkers {
 		if w == worker {
 			m.ActiveWorkers = append(m.ActiveWorkers[:i], m.ActiveWorkers[i+1:]...)
@@ -603,7 +648,9 @@ func (m *MemoryManager) PruneExcessWorkers() {
 				w.Cmd.Process.Kill()
 				go func(c *exec.Cmd) { c.Wait() }(w.Cmd)
 			}
-			m.CurrentRAMMB -= w.ActualRamMB
+			if !m.LiveRAMMode {
+				m.CurrentRAMMB -= w.ActualRamMB
+			}
 			logsToEmit = append(logsToEmit, fmt.Sprintf("🛑 [Auto-Scaler] Terminated %s daemon (Pipeline Idle).", w.Component))
 			continue
 		}
@@ -614,7 +661,9 @@ func (m *MemoryManager) PruneExcessWorkers() {
 				w.Cmd.Process.Kill()
 				go func(c *exec.Cmd) { c.Wait() }(w.Cmd)
 			}
-			m.CurrentRAMMB -= w.ActualRamMB
+			if !m.LiveRAMMode {
+				m.CurrentRAMMB -= w.ActualRamMB
+			}
 			logsToEmit = append(logsToEmit, fmt.Sprintf("🧹 [Auto-Scaler] Terminated excess %s thread.", w.Component))
 		} else {
 			retainedWorkers = append(retainedWorkers, w)

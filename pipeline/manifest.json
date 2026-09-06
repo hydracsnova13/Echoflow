@@ -47,7 +47,7 @@
         "domain": "cpu",
         "execution_mode": "sequential",
         "depends_on": [
-            "MetadataProfiler"
+            "WhisperTranscriber"
         ],
         "script": "pipeline/audio/speaker_diarizer.py",
         "accepted_inputs": [

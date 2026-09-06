@@ -72,17 +72,17 @@ func isBypassed(mediaType, outputFormat, compName string) bool {
 	isAudioASRNode := compName == "AudioChunker" || compName == "WhisperTranscriber" || compName == "SpeakerDiarizer" || compName == "TranscriptAggregator"
 
 	if mediaType == "text" {
-		if isVideoNode || isAudioASRNode {
+		if isVideoNode || isAudioASRNode || compName == "SpeakerDiarizer" {
 			return true
 		}
 	}
-	if mediaType == "audio" || outputFormat == "audio" || outputFormat == "text" {
-		if isVideoNode {
+	if outputFormat == "audio" || outputFormat == "wav" || outputFormat == "mp3" {
+		if isVideoNode || compName == "MediaCompositor" {
 			return true
 		}
 	}
-	if outputFormat == "text" {
-		if compName == "VoiceDubber" {
+	if outputFormat == "text" || outputFormat == "srt" || outputFormat == "txt" || outputFormat == "json" {
+		if isVideoNode || compName == "VoiceDubber" || compName == "MediaCompositor" {
 			return true
 		}
 	}
@@ -105,6 +105,12 @@ func (d *DAGExecutor) isDependencySatisfied(job *broker.JobManifest, compName, m
 
 	meta := d.MemoryManager.PipelineDAG[compName]
 	if meta.ExecutionMode == "sequential" {
+		if compName == "TranscriptAggregator" && !job.AuditASRDone {
+			return false
+		}
+		if compName == "NMTTranslator" && !job.AuditNMTDone {
+			return false
+		}
 		return job.GlobalTasks[compName] == broker.StateDone
 	} else if meta.ExecutionMode == "chunked" {
 		chunkDir := d.getChunkSourceDir(job.JobID, compName)
@@ -163,8 +169,7 @@ func (d *DAGExecutor) EvaluateJob(jobID string) {
 	retryCounts := make(map[string]int)
 
 	for range ticker.C {
-		if job.Status == broker.JobPaused {
-			d.MemoryManager.LogToUI(fmt.Sprintf("⏸️ [DAG Engine] Job %s thread gracefully suspended.", jobID))
+		if job.Status == broker.JobPaused || job.Status == broker.JobAuditASR || job.Status == broker.JobAuditNMT {
 			return
 		}
 		if job.Status == broker.JobDone {
@@ -174,8 +179,22 @@ func (d *DAGExecutor) EvaluateJob(jobID string) {
 		hasFatalError := false
 		mediaType, outputFormat := d.getJobConfig(jobID)
 
-		for compName, meta := range d.MemoryManager.PipelineDAG {
+		if job.GlobalTasks["TranscriptAggregator"] == broker.StateDone && !job.AuditASRDone {
+			if job.Status != broker.JobAuditASR {
+				job.SetStatus(broker.JobAuditASR)
+				d.MemoryManager.LogToUI(fmt.Sprintf("⏸️ [DAG Engine] Job %s paused for Human-in-the-Loop ASR Audit.", jobID))
+			}
+			return
+		}
+		if job.GlobalTasks["NMTTranslator"] == broker.StateDone && !job.AuditNMTDone {
+			if job.Status != broker.JobAuditNMT {
+				job.SetStatus(broker.JobAuditNMT)
+				d.MemoryManager.LogToUI(fmt.Sprintf("⏸️ [DAG Engine] Job %s paused for Human-in-the-Loop NMT Audit.", jobID))
+			}
+			return
+		}
 
+		for compName, meta := range d.MemoryManager.PipelineDAG {
 			if isBypassed(mediaType, outputFormat, compName) {
 				if meta.ExecutionMode == "sequential" && job.GlobalTasks[compName] != broker.StateDone {
 					job.UpdateGlobalTask(compName, broker.StateDone)
@@ -193,7 +212,6 @@ func (d *DAGExecutor) EvaluateJob(jobID string) {
 			}
 
 			if meta.ExecutionMode == "sequential" {
-
 				if job.GlobalTasks[compName] == broker.StateError {
 					retryKey := compName
 					if retryCounts[retryKey] < 3 {
@@ -224,7 +242,6 @@ func (d *DAGExecutor) EvaluateJob(jobID string) {
 			}
 
 			if meta.ExecutionMode == "chunked" {
-
 				upstreamActive := true
 				if len(meta.DependsOn) > 0 {
 					for _, dep := range meta.DependsOn {
@@ -283,7 +300,6 @@ func (d *DAGExecutor) EvaluateJob(jobID string) {
 						if isBypassed(mediaType, outputFormat, dep) {
 							continue
 						}
-
 						depMeta := d.MemoryManager.PipelineDAG[dep]
 						if depMeta.ExecutionMode == "sequential" {
 							if job.GlobalTasks[dep] != broker.StateDone && job.GlobalTasks[dep] != broker.StateRunning {
@@ -304,12 +320,7 @@ func (d *DAGExecutor) EvaluateJob(jobID string) {
 						inputPath := filepath.Join(chunkDir, chunkID)
 						job.UpdateChunkState(chunkID, compName, broker.StateQueued)
 
-						task := broker.BucketTask{
-							JobID:     jobID,
-							ChunkID:   chunkID,
-							Component: compName,
-							InputData: inputPath,
-						}
+						task := broker.BucketTask{JobID: jobID, ChunkID: chunkID, Component: compName, InputData: inputPath}
 						if isRetry {
 							d.MemoryManager.PushBucketPriority(task)
 						} else {
@@ -327,7 +338,7 @@ func (d *DAGExecutor) EvaluateJob(jobID string) {
 
 		if hasFatalError {
 			job.SetStatus(broker.JobPaused)
-			d.MemoryManager.LogToUI(fmt.Sprintf("⚠️ [DAG Engine] Job %s suspended after exceeding retry limits. Manual resume required.", jobID))
+			d.MemoryManager.LogToUI(fmt.Sprintf("⚠️ [DAG Engine] Job %s suspended after exceeding retry limits.", jobID))
 			return
 		}
 

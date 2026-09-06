@@ -2,7 +2,19 @@ import sys
 import os
 import json
 import warnings
+import multiprocessing
+
+# 🚀 OPTIMIZED: Unleash full CPU power for sequential execution (leaves 1 core for OS)
+total_cores = multiprocessing.cpu_count() or 4
+num_cores = max(1, total_cores - 1)
+os.environ["OMP_NUM_THREADS"] = str(num_cores)
+os.environ["OPENBLAS_NUM_THREADS"] = str(num_cores)
+os.environ["MKL_NUM_THREADS"] = str(num_cores)
+
 import torch
+torch.set_num_threads(num_cores)
+torch.set_num_interop_threads(num_cores)
+
 import scipy.io.wavfile
 import numpy as np
 from pathlib import Path
@@ -11,18 +23,12 @@ from pydub import AudioSegment
 warnings.filterwarnings("ignore")
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
-num_cores = min(4, os.cpu_count() or 4)
-torch.set_num_threads(num_cores)
-torch.set_num_interop_threads(num_cores)
-
-# 🛡️ THE FIX 2: Torchaudio >= 2.1.0 removed legacy backend functions. 
 import torchaudio
 if not hasattr(torchaudio, 'set_audio_backend'):
     torchaudio.set_audio_backend = lambda *args, **kwargs: None
 if not hasattr(torchaudio, 'get_audio_backend'):
     torchaudio.get_audio_backend = lambda: "soundfile"
 
-# 🛡️ THE FIX 3: HuggingFace Hub > 0.22 deleted 'use_auth_token'. 
 from pyannote.audio.core.model import Model
 _orig_model_from_pretrained = Model.from_pretrained
 
@@ -66,7 +72,6 @@ def run_diarization(input_target: str, output_dir: str):
         print(f"❌ [SpeakerDiarizer] Unable to locate valid source audio file.", flush=True)
         sys.exit(1)
 
-    # Read speaker limits from job_config.json
     min_speakers = None
     max_speakers = None
     num_spk_val = None
@@ -88,7 +93,6 @@ def run_diarization(input_target: str, output_dir: str):
     full_audio = AudioSegment.from_wav(source_audio)
     total_duration_sec = len(full_audio) / 1000.0
 
-    # 🚀 OPTIMIZATION 1: SINGLE-SPEAKER FAST BYPASS (< 1 second execution time)
     if min_speakers == 1 and max_speakers == 1:
         print("⚡ [SpeakerDiarizer] 1 Speaker configured. Executing Fast Single-Speaker Bypass (< 1s)...", flush=True)
         os.makedirs(output_dir, exist_ok=True)
@@ -122,14 +126,13 @@ def run_diarization(input_target: str, output_dir: str):
     sample_rate, data = scipy.io.wavfile.read(source_audio)
     
     if len(data.shape) == 2:
-        data = data.mean(axis=1) # Downmix stereo to mono
+        data = data.mean(axis=1) 
         
     waveform = torch.from_numpy(data).float()
     if data.dtype == np.int16:
         waveform = waveform / 32768.0
-    waveform = waveform.unsqueeze(0) # (1, num_samples)
+    waveform = waveform.unsqueeze(0) 
 
-    # 🚀 OPTIMIZATION 2: Downsample to 16kHz mono if sample rate is higher
     if sample_rate != 16000:
         resampler = torchaudio.transforms.Resample(orig_freq=sample_rate, new_freq=16000)
         waveform = resampler(waveform)

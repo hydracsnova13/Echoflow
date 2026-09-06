@@ -3,6 +3,8 @@
 #  Ensures the project is fully modular and works on any system out of the box.
 # =============================================================================
 
+.machine_id
+*.bak
 
 # =============================================================================
 # 1. RUNTIME & WORKSPACE DATA
@@ -125,6 +127,9 @@ bin/*.7z
 *.test
 *.out
 
+# Whitelist: Ship pre-built Echoflow GUI executable in the repo
+!build/bin/Echoflow.exe
+
 # Go workspace & debug
 go.work
 go.work.sum
@@ -141,8 +146,9 @@ mem.prof
 # =============================================================================
 # 6. WAILS & FRONTEND BUILD ARTIFACTS
 # =============================================================================
-# Production build output
-build/bin/
+# Production build output (except the shipped executable)
+build/bin/*
+!build/bin/Echoflow.exe
 build/obj/
 
 # Frontend compiled assets & dependencies

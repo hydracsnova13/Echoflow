@@ -3,24 +3,52 @@
 import {broker} from '../models';
 import {main} from '../models';
 
+export function ApproveASRTranscript(arg1:string,arg2:string):Promise<string>;
+
 export function ApproveCandidateTerms(arg1:string):Promise<string>;
+
+export function ApproveNMTTranscript(arg1:string,arg2:string):Promise<string>;
 
 export function GetAllPendingCandidateTerms():Promise<string>;
 
-export function GetDomainDictionary():Promise<string>;
+export function GetAuditData(arg1:string,arg2:string):Promise<string>;
+
+export function GetGlobalDictionary():Promise<string>;
 
 export function GetJobCandidateTerms(arg1:string):Promise<string>;
 
 export function GetJobOutputPath(arg1:string):Promise<Record<string, string>>;
 
+export function GetMachineID():Promise<string>;
+
+export function GetMyDictionaryShard():Promise<string>;
+
 export function GetPipelineManifest():Promise<Record<string, broker.PipelineComponent>>;
 
 export function GetRecentCheckpoints():Promise<Array<main.JobSummary>>;
 
+export function GetSetupStatus():Promise<string>;
+
+export function GetSyncStatus():Promise<string>;
+
 export function ResumeJob(arg1:string):Promise<void>;
 
-export function SaveDomainDictionary(arg1:string):Promise<string>;
+export function RunSetupScript(arg1:string,arg2:string):Promise<string>;
+
+export function SaveASRTranscriptProgress(arg1:string,arg2:string):Promise<string>;
+
+export function SaveMyDictionaryShard(arg1:string):Promise<string>;
+
+export function SaveNMTTranscriptProgress(arg1:string,arg2:string):Promise<string>;
 
 export function StopJob(arg1:string):Promise<void>;
 
 export function SubmitJob(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string,arg6:string,arg7:string,arg8:string,arg9:string):Promise<string>;
+
+export function SyncGlobalRepo():Promise<string>;
+
+export function SyncLocalShard():Promise<string>;
+
+export function TriggerManualSync():Promise<string>;
+
+export function UpdateDomainDictionary():Promise<string>;

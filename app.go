@@ -1,27 +1,36 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
-	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"ecoflow/internal/broker"
 	"ecoflow/internal/pipeline"
+
+	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 type App struct {
-	ctx context.Context
-	MM  *broker.MemoryManager
-	DAG *pipeline.DAGExecutor
+	ctx         context.Context
+	MM          *broker.MemoryManager
+	DAG         *pipeline.DAGExecutor
+	setupStatus string
+	setupMu     sync.RWMutex
 }
 
 func NewApp(mm *broker.MemoryManager, dag *pipeline.DAGExecutor) *App {
@@ -34,6 +43,153 @@ func NewApp(mm *broker.MemoryManager, dag *pipeline.DAGExecutor) *App {
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.MM.StartTelemetryEmitter(ctx)
+}
+
+// ==========================================
+// SETUP SCRIPT RUNNER (UI-driven)
+// ==========================================
+
+func (a *App) GetMachineID() string {
+	idPath := filepath.Join(a.MM.ProjectRoot, ".machine_id")
+	if bytes, err := os.ReadFile(idPath); err == nil {
+		return strings.TrimSpace(string(bytes))
+	}
+	return ""
+}
+
+func (a *App) GetSetupStatus() string {
+	a.setupMu.RLock()
+	defer a.setupMu.RUnlock()
+	if a.setupStatus == "" {
+		return "idle"
+	}
+	return a.setupStatus
+}
+
+func (a *App) RunSetupScript(machineID string, hfToken string) (string, error) {
+	a.setupMu.Lock()
+	if a.setupStatus == "running" {
+		a.setupMu.Unlock()
+		return "", fmt.Errorf("setup is already running")
+	}
+	a.setupStatus = "running"
+	a.setupMu.Unlock()
+
+	// Pre-write the machine_id file so setup_script.py detects it and skips the prompt
+	machineID = strings.TrimSpace(machineID)
+	if machineID != "" {
+		idPath := filepath.Join(a.MM.ProjectRoot, ".machine_id")
+		os.WriteFile(idPath, []byte(machineID), 0644)
+	}
+
+	go func() {
+		defer func() {
+			a.setupMu.Lock()
+			if a.setupStatus == "running" {
+				a.setupStatus = "error"
+			}
+			a.setupMu.Unlock()
+		}()
+
+		scriptPath := filepath.Join(a.MM.ProjectRoot, "setup_script.py")
+
+		// Try py -3.12 first, fallback to python, then python3
+		var pythonExec string
+		for _, candidate := range []string{"py", "python", "python3"} {
+			if _, err := exec.LookPath(candidate); err == nil {
+				pythonExec = candidate
+				break
+			}
+		}
+		if pythonExec == "" {
+			wailsRuntime.EventsEmit(a.ctx, "setup_log", "❌ Python not found on system PATH")
+			wailsRuntime.EventsEmit(a.ctx, "setup_status", "error")
+			return
+		}
+
+		var cmd *exec.Cmd
+		if pythonExec == "py" {
+			cmd = exec.Command(pythonExec, "-3.12", scriptPath)
+		} else {
+			cmd = exec.Command(pythonExec, scriptPath)
+		}
+
+		cmd.Dir = a.MM.ProjectRoot
+		cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+
+		// Set environment for non-interactive mode
+		cmd.Env = append(os.Environ(),
+			"ECOFLOW_NONINTERACTIVE=1",
+			"PYTHONIOENCODING=utf-8",
+			fmt.Sprintf("ECOFLOW_MACHINE_ID=%s", machineID),
+		)
+		if hfToken != "" {
+			cmd.Env = append(cmd.Env,
+				fmt.Sprintf("HF_TOKEN=%s", hfToken),
+				fmt.Sprintf("HUGGING_FACE_HUB_TOKEN=%s", hfToken),
+			)
+		}
+
+		// Create a pipe to read stdout+stderr
+		stdoutPipe, err := cmd.StdoutPipe()
+		if err != nil {
+			wailsRuntime.EventsEmit(a.ctx, "setup_log", fmt.Sprintf("❌ Failed to create stdout pipe: %s", err))
+			wailsRuntime.EventsEmit(a.ctx, "setup_status", "error")
+			return
+		}
+		cmd.Stderr = cmd.Stdout // merge stderr into stdout
+
+		wailsRuntime.EventsEmit(a.ctx, "setup_log", "🚀 Starting EcoFlow Setup...")
+		wailsRuntime.EventsEmit(a.ctx, "setup_status", "running")
+		wailsRuntime.EventsEmit(a.ctx, "setup_progress", 0)
+
+		if err := cmd.Start(); err != nil {
+			wailsRuntime.EventsEmit(a.ctx, "setup_log", fmt.Sprintf("❌ Failed to start setup: %s", err))
+			wailsRuntime.EventsEmit(a.ctx, "setup_status", "error")
+			return
+		}
+
+		// Stream output line-by-line
+		scanner := bufio.NewScanner(stdoutPipe)
+		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+		for scanner.Scan() {
+			line := scanner.Text()
+
+			// Parse PROGRESS markers
+			if strings.HasPrefix(line, "PROGRESS:") {
+				pctStr := strings.TrimPrefix(line, "PROGRESS:")
+				pctStr = strings.TrimSuffix(pctStr, "%")
+				if pct, err := strconv.Atoi(pctStr); err == nil {
+					wailsRuntime.EventsEmit(a.ctx, "setup_progress", pct)
+				}
+				continue
+			}
+
+			wailsRuntime.EventsEmit(a.ctx, "setup_log", line)
+		}
+
+		if err := cmd.Wait(); err != nil {
+			wailsRuntime.EventsEmit(a.ctx, "setup_log", fmt.Sprintf("❌ Setup exited with error: %s", err))
+			wailsRuntime.EventsEmit(a.ctx, "setup_status", "error")
+			a.setupMu.Lock()
+			a.setupStatus = "error"
+			a.setupMu.Unlock()
+			return
+		}
+
+		wailsRuntime.EventsEmit(a.ctx, "setup_log", "🎉 Setup Complete!")
+		wailsRuntime.EventsEmit(a.ctx, "setup_progress", 100)
+		wailsRuntime.EventsEmit(a.ctx, "setup_status", "completed")
+
+		a.setupMu.Lock()
+		a.setupStatus = "completed"
+		a.setupMu.Unlock()
+
+		// Reload configs after setup completes
+		a.MM.ReloadConfigs()
+	}()
+
+	return "Setup started", nil
 }
 
 type JobSummary struct {
@@ -88,9 +244,18 @@ func (a *App) GetRecentCheckpoints() ([]JobSummary, error) {
 						}
 					}
 				}
+
 				progress := 0
 				if total > 0 {
 					progress = int((float64(done) / float64(total)) * 100)
+				}
+
+				if progress == 100 && status == "RUNNING" {
+					status = "COMPLETED"
+					state["status"] = status
+					if healedBytes, err := json.MarshalIndent(state, "", "  "); err == nil {
+						os.WriteFile(manifestPath, healedBytes, 0644)
+					}
 				}
 
 				jobs = append(jobs, JobSummary{
@@ -109,6 +274,7 @@ func (a *App) GetRecentCheckpoints() ([]JobSummary, error) {
 	return jobs, nil
 }
 
+// 🛡️ FULL UI PARAMETER INJECTION: Ensures all configs from frontend are perfectly bridged to the Python daemons
 func (a *App) SubmitJob(targetPath string, sourceLang string, targetLang string, targetOutFormat string, numSpeakers string, transcriptionQuality string, dubCloning string, dubSpeed string, subtitleMode string) (string, error) {
 	targetPath = strings.Trim(strings.TrimSpace(targetPath), "\"'")
 
@@ -138,7 +304,6 @@ func (a *App) SubmitJob(targetPath string, sourceLang string, targetLang string,
 		mediaType = "text"
 	}
 
-	// Derive min/max speakers from the unified num_speakers field
 	minSpeakers := ""
 	maxSpeakers := ""
 	if numSpeakers != "" && numSpeakers != "auto" {
@@ -242,7 +407,6 @@ func (a *App) ResumeJob(jobID string) error {
 var mediaServerOnce sync.Once
 
 func (a *App) GetJobOutputPath(jobID string) map[string]string {
-	// Start a lightweight local file server on port 9999 for the Wails UI to stream from
 	mediaServerOnce.Do(func() {
 		workspaceDir := filepath.Join(a.MM.ProjectRoot, "workspace", "jobs")
 		http.Handle("/media/", http.StripPrefix("/media/", http.FileServer(http.Dir(workspaceDir))))
@@ -266,11 +430,9 @@ func (a *App) GetJobOutputPath(jobID string) map[string]string {
 			absPath := filepath.Join(outDir, e.Name())
 			ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(e.Name()), "."))
 
-			// Return a standard HTTP URL instead of a blocked file:/// path
 			res["Path"] = fmt.Sprintf("http://localhost:9999/media/%s/out_MediaCompositor/%s", jobID, e.Name())
 			res["Format"] = ext
 
-			// If it's a text format, read the actual text content to display in the UI
 			if ext == "srt" || ext == "txt" || ext == "json" {
 				bytes, _ := os.ReadFile(absPath)
 				res["Content"] = string(bytes)
@@ -282,84 +444,318 @@ func (a *App) GetJobOutputPath(jobID string) map[string]string {
 	return res
 }
 
-func (a *App) GetDomainDictionary() (string, error) {
-	dictPath := filepath.Join(a.MM.ProjectRoot, "pipeline", "config", "domain_dictionary.json")
-	bytes, err := os.ReadFile(dictPath)
+func (a *App) SaveASRTranscriptProgress(jobID string, editedJSONData string) (string, error) {
+	jobID = strings.Trim(strings.TrimSpace(jobID), "\"'")
+	job := a.MM.Checkpoints.GetJob(jobID)
+
+	if job == nil {
+		manifestPath := filepath.Join(a.MM.ProjectRoot, "workspace", "jobs", jobID, "manifest.json")
+		if _, err := os.Stat(manifestPath); err == nil {
+			job = a.MM.Checkpoints.InitializeJob(jobID, "", filepath.Join(a.MM.ProjectRoot, "workspace"))
+		} else {
+			return "", fmt.Errorf("job not found in active memory or on disk")
+		}
+	}
+
+	outPath := filepath.Join(a.MM.ProjectRoot, "workspace", "jobs", jobID, "out_TranscriptAggregator", "master_transcript.json")
+
+	if err := os.WriteFile(outPath, []byte(editedJSONData), 0644); err != nil {
+		return "", fmt.Errorf("failed to save audited transcript progress: %v", err)
+	}
+
+	a.MM.LogToUI(fmt.Sprintf("💾 ASR Audit Progress saved for Job %s.", jobID))
+	return "OK", nil
+}
+
+func (a *App) SaveNMTTranscriptProgress(jobID string, editedJSONData string) (string, error) {
+	jobID = strings.Trim(strings.TrimSpace(jobID), "\"'")
+	job := a.MM.Checkpoints.GetJob(jobID)
+
+	if job == nil {
+		manifestPath := filepath.Join(a.MM.ProjectRoot, "workspace", "jobs", jobID, "manifest.json")
+		if _, err := os.Stat(manifestPath); err == nil {
+			job = a.MM.Checkpoints.InitializeJob(jobID, "", filepath.Join(a.MM.ProjectRoot, "workspace"))
+		} else {
+			return "", fmt.Errorf("job not found in active memory or on disk")
+		}
+	}
+
+	outPath := filepath.Join(a.MM.ProjectRoot, "workspace", "jobs", jobID, "out_NMTTranslator", "master_translated.json")
+
+	if err := os.WriteFile(outPath, []byte(editedJSONData), 0644); err != nil {
+		return "", fmt.Errorf("failed to save audited translation progress: %v", err)
+	}
+
+	a.MM.LogToUI(fmt.Sprintf("💾 NMT Audit Progress saved for Job %s.", jobID))
+	return "OK", nil
+}
+
+func (a *App) ApproveASRTranscript(jobID string, editedJSONData string) (string, error) {
+	jobID = strings.Trim(strings.TrimSpace(jobID), "\"'")
+	job := a.MM.Checkpoints.GetJob(jobID)
+
+	if job == nil {
+		manifestPath := filepath.Join(a.MM.ProjectRoot, "workspace", "jobs", jobID, "manifest.json")
+		if _, err := os.Stat(manifestPath); err == nil {
+			job = a.MM.Checkpoints.InitializeJob(jobID, "", filepath.Join(a.MM.ProjectRoot, "workspace"))
+		} else {
+			return "", fmt.Errorf("job not found in active memory or on disk")
+		}
+	}
+
+	outPath := filepath.Join(a.MM.ProjectRoot, "workspace", "jobs", jobID, "out_TranscriptAggregator", "master_transcript.json")
+
+	if err := os.WriteFile(outPath, []byte(editedJSONData), 0644); err != nil {
+		return "", fmt.Errorf("failed to save audited transcript: %v", err)
+	}
+
+	job.Mu.Lock()
+	job.AuditASRDone = true
+	job.Status = broker.JobRunning
+	job.Mu.Unlock()
+	job.Save()
+
+	a.MM.LogToUI(fmt.Sprintf("▶️ ASR Audit Approved. Resuming DAG for Job %s...", jobID))
+	go a.DAG.EvaluateJob(jobID)
+
+	return "OK", nil
+}
+
+func (a *App) ApproveNMTTranscript(jobID string, editedJSONData string) (string, error) {
+	jobID = strings.Trim(strings.TrimSpace(jobID), "\"'")
+	job := a.MM.Checkpoints.GetJob(jobID)
+
+	if job == nil {
+		manifestPath := filepath.Join(a.MM.ProjectRoot, "workspace", "jobs", jobID, "manifest.json")
+		if _, err := os.Stat(manifestPath); err == nil {
+			job = a.MM.Checkpoints.InitializeJob(jobID, "", filepath.Join(a.MM.ProjectRoot, "workspace"))
+		} else {
+			return "", fmt.Errorf("job not found in active memory or on disk")
+		}
+	}
+
+	outPath := filepath.Join(a.MM.ProjectRoot, "workspace", "jobs", jobID, "out_NMTTranslator", "master_translated.json")
+
+	if err := os.WriteFile(outPath, []byte(editedJSONData), 0644); err != nil {
+		return "", fmt.Errorf("failed to save audited translation: %v", err)
+	}
+
+	job.Mu.Lock()
+	job.AuditNMTDone = true
+	job.Status = broker.JobRunning
+	job.Mu.Unlock()
+	job.Save()
+
+	a.MM.LogToUI(fmt.Sprintf("▶️ NMT Audit Approved. Resuming DAG for Job %s...", jobID))
+	go a.DAG.EvaluateJob(jobID)
+
+	return "OK", nil
+}
+
+// ==========================================
+// DYNAMIC DICTIONARY SHARD MANAGEMENT
+// ==========================================
+
+func (a *App) getMachineID() string {
+	idPath := filepath.Join(a.MM.ProjectRoot, ".machine_id")
+	if bytes, err := os.ReadFile(idPath); err == nil {
+		return strings.TrimSpace(string(bytes))
+	}
+	randomBytes := make([]byte, 4)
+	rand.Read(randomBytes)
+	newID := hex.EncodeToString(randomBytes)
+	os.WriteFile(idPath, []byte(newID), 0644)
+	return newID
+}
+
+type ShardMeta struct {
+	MachineID   string `json:"machine_id"`
+	LastUpdated int64  `json:"last_updated"`
+}
+
+type DictShard struct {
+	Meta                   ShardMeta         `json:"_meta"`
+	AsrCorrections         map[string]string `json:"asr_corrections"`
+	DomainTerms            map[string]string `json:"domain_terms"`
+	AsrStemPatterns        []interface{}     `json:"asr_stem_patterns"`
+	SpokenEnglishSmoothing []interface{}     `json:"spoken_english_smoothing"`
+	SpokenHindiSmoothing   []interface{}     `json:"spoken_hindi_smoothing"`
+	SpokenMarathiSmoothing []interface{}     `json:"spoken_marathi_smoothing"`
+}
+
+func (a *App) GetSyncStatus() string {
+	return a.MM.SyncManager.GetStatus()
+}
+
+func (a *App) TriggerManualSync() string {
+	go a.SyncLocalShard()
+	return "Sync Initiated"
+}
+
+func (a *App) SyncLocalShard() (string, error) {
+	machineID := a.getMachineID()
+	return a.MM.SyncManager.SyncLocal(machineID, a.MM.LogToUI)
+}
+
+func (a *App) SyncGlobalRepo() (string, error) {
+	return a.MM.SyncManager.SyncGlobal(a.MM.LogToUI)
+}
+
+func (a *App) UpdateDomainDictionary() (string, error) {
+	_, err := a.MM.SyncManager.UpdateDomainDictionary(a.MM.LogToUI)
 	if err != nil {
-		return "", fmt.Errorf("could not read domain dictionary: %v", err)
+		return "", err
+	}
+	return a.GetGlobalDictionary()
+}
+
+func deduplicateShardMap(m map[string]string) map[string]string {
+	result := make(map[string]string)
+	lowerToKey := make(map[string]string)
+	for k, v := range m {
+		kTrimmed := strings.TrimSpace(k)
+		vTrimmed := strings.TrimSpace(v)
+		if kTrimmed == "" {
+			continue
+		}
+		kLower := strings.ToLower(kTrimmed)
+		if oldKey, exists := lowerToKey[kLower]; exists {
+			delete(result, oldKey)
+		}
+		lowerToKey[kLower] = kTrimmed
+		result[kTrimmed] = vTrimmed
+	}
+	return result
+}
+
+func deduplicateShardPatterns(list []interface{}) []interface{} {
+	seen := make(map[string]bool)
+	var result []interface{}
+	for _, item := range list {
+		if itemMap, ok := item.(map[string]interface{}); ok {
+			pattern, _ := itemMap["pattern"].(string)
+			pTrimmed := strings.TrimSpace(pattern)
+			if pTrimmed == "" {
+				continue
+			}
+			pKey := strings.ToLower(pTrimmed)
+			if !seen[pKey] {
+				seen[pKey] = true
+				result = append(result, item)
+			}
+		} else {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+func (a *App) GetGlobalDictionary() (string, error) {
+	basePath := filepath.Join(a.MM.ProjectRoot, "pipeline", "config", "domain_dictionary.json")
+	var compiled DictShard
+
+	baseBytes, err := os.ReadFile(basePath)
+	if err == nil {
+		json.Unmarshal(baseBytes, &compiled)
+	}
+
+	if compiled.AsrCorrections == nil {
+		compiled.AsrCorrections = make(map[string]string)
+	}
+	if compiled.DomainTerms == nil {
+		compiled.DomainTerms = make(map[string]string)
+	}
+
+	shardsDir := filepath.Join(a.MM.ProjectRoot, "pipeline", "config", "shards")
+	entries, _ := os.ReadDir(shardsDir)
+
+	var shards []DictShard
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".json") {
+			shardBytes, err := os.ReadFile(filepath.Join(shardsDir, entry.Name()))
+			if err == nil {
+				var shard DictShard
+				if json.Unmarshal(shardBytes, &shard) == nil {
+					shards = append(shards, shard)
+				}
+			}
+		}
+	}
+
+	sort.Slice(shards, func(i, j int) bool {
+		return shards[i].Meta.LastUpdated < shards[j].Meta.LastUpdated
+	})
+
+	for _, shard := range shards {
+		for k, v := range shard.AsrCorrections {
+			compiled.AsrCorrections[k] = v
+		}
+		for k, v := range shard.DomainTerms {
+			compiled.DomainTerms[k] = v
+		}
+		if len(shard.AsrStemPatterns) > 0 {
+			compiled.AsrStemPatterns = append(compiled.AsrStemPatterns, shard.AsrStemPatterns...)
+		}
+		if len(shard.SpokenEnglishSmoothing) > 0 {
+			compiled.SpokenEnglishSmoothing = append(compiled.SpokenEnglishSmoothing, shard.SpokenEnglishSmoothing...)
+		}
+		if len(shard.SpokenHindiSmoothing) > 0 {
+			compiled.SpokenHindiSmoothing = append(compiled.SpokenHindiSmoothing, shard.SpokenHindiSmoothing...)
+		}
+		if len(shard.SpokenMarathiSmoothing) > 0 {
+			compiled.SpokenMarathiSmoothing = append(compiled.SpokenMarathiSmoothing, shard.SpokenMarathiSmoothing...)
+		}
+	}
+
+	res, _ := json.Marshal(compiled)
+	return string(res), nil
+}
+
+func (a *App) GetMyDictionaryShard() (string, error) {
+	machineID := a.getMachineID()
+	shardPath := filepath.Join(a.MM.ProjectRoot, "pipeline", "config", "shards", fmt.Sprintf("dict_%s.json", machineID))
+
+	bytes, err := os.ReadFile(shardPath)
+	if err != nil {
+		scaffold := fmt.Sprintf(`{"_meta":{"machine_id":"%s","last_updated":0},"asr_corrections":{},"domain_terms":{},"asr_stem_patterns":[],"spoken_english_smoothing":[],"spoken_hindi_smoothing":[],"spoken_marathi_smoothing":[]}`, machineID)
+		return scaffold, nil
 	}
 	return string(bytes), nil
 }
 
-func (a *App) SaveDomainDictionary(dictJSON string) (string, error) {
-	var rawData map[string]interface{}
-	if err := json.Unmarshal([]byte(dictJSON), &rawData); err != nil {
+func (a *App) SaveMyDictionaryShard(dictJSON string) (string, error) {
+	var shard DictShard
+	if err := json.Unmarshal([]byte(dictJSON), &shard); err != nil {
 		return "", fmt.Errorf("invalid JSON syntax: %v", err)
 	}
 
-	// Validate English Smoothing Regex Rules
-	if enRules, ok := rawData["spoken_english_smoothing"].([]interface{}); ok {
-		for idx, ruleObj := range enRules {
-			if ruleMap, ok := ruleObj.(map[string]interface{}); ok {
-				pat, _ := ruleMap["pattern"].(string)
-				if pat == "" {
-					return "", fmt.Errorf("English rule #%d has an empty pattern", idx+1)
-				}
-				if _, err := regexp.Compile(pat); err != nil {
-					return "", fmt.Errorf("invalid regex pattern in English rule #%d ('%s'): %v", idx+1, pat, err)
-				}
-			}
-		}
+	machineID := a.getMachineID()
+	shard.Meta = ShardMeta{
+		MachineID:   machineID,
+		LastUpdated: time.Now().Unix(),
 	}
 
-	// Validate Hindi Smoothing Regex Rules
-	if hiRules, ok := rawData["spoken_hindi_smoothing"].([]interface{}); ok {
-		for idx, ruleObj := range hiRules {
-			if ruleMap, ok := ruleObj.(map[string]interface{}); ok {
-				pat, _ := ruleMap["pattern"].(string)
-				if pat == "" {
-					return "", fmt.Errorf("Hindi rule #%d has an empty pattern", idx+1)
-				}
-				if _, err := regexp.Compile(pat); err != nil {
-					return "", fmt.Errorf("invalid regex pattern in Hindi rule #%d ('%s'): %v", idx+1, pat, err)
-				}
-			}
-		}
+	// Conduct deduplication on shard entries
+	shard.AsrCorrections = deduplicateShardMap(shard.AsrCorrections)
+	shard.DomainTerms = deduplicateShardMap(shard.DomainTerms)
+	shard.AsrStemPatterns = deduplicateShardPatterns(shard.AsrStemPatterns)
+	shard.SpokenEnglishSmoothing = deduplicateShardPatterns(shard.SpokenEnglishSmoothing)
+	shard.SpokenHindiSmoothing = deduplicateShardPatterns(shard.SpokenHindiSmoothing)
+	shard.SpokenMarathiSmoothing = deduplicateShardPatterns(shard.SpokenMarathiSmoothing)
+
+	shardsDir := filepath.Join(a.MM.ProjectRoot, "pipeline", "config", "shards")
+	os.MkdirAll(shardsDir, 0755)
+
+	shardPath := filepath.Join(shardsDir, fmt.Sprintf("dict_%s.json", machineID))
+
+	formattedBytes, _ := json.MarshalIndent(shard, "", "  ")
+	if err := os.WriteFile(shardPath, formattedBytes, 0644); err != nil {
+		return "", fmt.Errorf("failed to write local shard: %v", err)
 	}
 
-	// Validate Marathi Smoothing Regex Rules
-	if mrRules, ok := rawData["spoken_marathi_smoothing"].([]interface{}); ok {
-		for idx, ruleObj := range mrRules {
-			if ruleMap, ok := ruleObj.(map[string]interface{}); ok {
-				pat, _ := ruleMap["pattern"].(string)
-				if pat == "" {
-					return "", fmt.Errorf("Marathi rule #%d has an empty pattern", idx+1)
-				}
-				if _, err := regexp.Compile(pat); err != nil {
-					return "", fmt.Errorf("invalid regex pattern in Marathi rule #%d ('%s'): %v", idx+1, pat, err)
-				}
-			}
-		}
-	}
-
-	dictPath := filepath.Join(a.MM.ProjectRoot, "pipeline", "config", "domain_dictionary.json")
-	backupPath := dictPath + ".bak"
-
-	// Create backup before writing
-	if existingBytes, err := os.ReadFile(dictPath); err == nil {
-		os.WriteFile(backupPath, existingBytes, 0644)
-	}
-
-	formattedBytes, err := json.MarshalIndent(rawData, "", "  ")
-	if err != nil {
-		return "", fmt.Errorf("failed to format JSON: %v", err)
-	}
-
-	if err := os.WriteFile(dictPath, formattedBytes, 0644); err != nil {
-		return "", fmt.Errorf("failed to write file: %v", err)
-	}
-
-	a.MM.LogToUI("📖 Domain Dictionary updated & persisted successfully!")
+	// NOTE: Per specification, saving locally does NOT modify domain_dictionary.json.
+	// domain_dictionary.json is only updated when the user clicks 'Sync Local' or 'Update Domain Dictionary'.
+	a.MM.LogToUI("📖 Local Contribution saved to disk with deduplication (Domain Dictionary untouched until sync).")
 	return "OK", nil
 }
 
@@ -377,23 +773,16 @@ func (a *App) GetJobCandidateTerms(jobID string) (string, error) {
 }
 
 func (a *App) GetAllPendingCandidateTerms() (string, error) {
-	dictPath := filepath.Join(a.MM.ProjectRoot, "pipeline", "config", "domain_dictionary.json")
-	existingTerms := make(map[string]bool)
+	compiledJSON, _ := a.GetGlobalDictionary()
+	var compiled DictShard
+	json.Unmarshal([]byte(compiledJSON), &compiled)
 
-	if dictBytes, err := os.ReadFile(dictPath); err == nil {
-		var rawData map[string]interface{}
-		if err := json.Unmarshal(dictBytes, &rawData); err == nil {
-			if asrMap, ok := rawData["asr_corrections"].(map[string]interface{}); ok {
-				for k := range asrMap {
-					existingTerms[strings.TrimSpace(k)] = true
-				}
-			}
-			if domainMap, ok := rawData["domain_terms"].(map[string]interface{}); ok {
-				for k := range domainMap {
-					existingTerms[strings.TrimSpace(k)] = true
-				}
-			}
-		}
+	existingTerms := make(map[string]bool)
+	for k := range compiled.AsrCorrections {
+		existingTerms[strings.TrimSpace(k)] = true
+	}
+	for k := range compiled.DomainTerms {
+		existingTerms[strings.TrimSpace(k)] = true
 	}
 
 	jobsDir := filepath.Join(a.MM.ProjectRoot, "workspace", "jobs")
@@ -436,7 +825,7 @@ func (a *App) GetAllPendingCandidateTerms() (string, error) {
 type ApprovedTermCandidate struct {
 	Original    string `json:"original"`
 	Replacement string `json:"replacement"`
-	Type        string `json:"type"` // "asr_corrections" or "domain_terms"
+	Type        string `json:"type"`
 }
 
 func (a *App) ApproveCandidateTerms(termsJSON string) (string, error) {
@@ -449,27 +838,15 @@ func (a *App) ApproveCandidateTerms(termsJSON string) (string, error) {
 		return "No terms provided", nil
 	}
 
-	dictPath := filepath.Join(a.MM.ProjectRoot, "pipeline", "config", "domain_dictionary.json")
-	dictBytes, err := os.ReadFile(dictPath)
-	if err != nil {
-		return "", fmt.Errorf("could not read dictionary: %v", err)
-	}
+	shardJSON, _ := a.GetMyDictionaryShard()
+	var localShard DictShard
+	json.Unmarshal([]byte(shardJSON), &localShard)
 
-	var rawData map[string]interface{}
-	if err := json.Unmarshal(dictBytes, &rawData); err != nil {
-		return "", fmt.Errorf("could not parse dictionary: %v", err)
+	if localShard.AsrCorrections == nil {
+		localShard.AsrCorrections = make(map[string]string)
 	}
-
-	asrMap, _ := rawData["asr_corrections"].(map[string]interface{})
-	if asrMap == nil {
-		asrMap = make(map[string]interface{})
-		rawData["asr_corrections"] = asrMap
-	}
-
-	domainMap, _ := rawData["domain_terms"].(map[string]interface{})
-	if domainMap == nil {
-		domainMap = make(map[string]interface{})
-		rawData["domain_terms"] = domainMap
+	if localShard.DomainTerms == nil {
+		localShard.DomainTerms = make(map[string]string)
 	}
 
 	approvedKeys := make(map[string]bool)
@@ -480,25 +857,19 @@ func (a *App) ApproveCandidateTerms(termsJSON string) (string, error) {
 		if orig == "" || repl == "" {
 			continue
 		}
+
 		if term.Type == "domain_terms" {
-			domainMap[orig] = repl
+			localShard.DomainTerms[orig] = repl
 		} else {
-			asrMap[orig] = repl
+			localShard.AsrCorrections[orig] = repl
 		}
 		approvedKeys[orig] = true
 		addedCount++
 	}
 
-	formattedBytes, err := json.MarshalIndent(rawData, "", "  ")
-	if err != nil {
-		return "", fmt.Errorf("failed to format JSON: %v", err)
-	}
+	updatedShardJSON, _ := json.Marshal(localShard)
+	a.SaveMyDictionaryShard(string(updatedShardJSON))
 
-	backupPath := dictPath + ".bak"
-	os.WriteFile(backupPath, dictBytes, 0644)
-	os.WriteFile(dictPath, formattedBytes, 0644)
-
-	// Clean up approved terms from all job candidate_terms.json files
 	jobsDir := filepath.Join(a.MM.ProjectRoot, "workspace", "jobs")
 	if entries, err := os.ReadDir(jobsDir); err == nil {
 		for _, entry := range entries {
@@ -524,6 +895,27 @@ func (a *App) ApproveCandidateTerms(termsJSON string) (string, error) {
 		}
 	}
 
-	a.MM.LogToUI(fmt.Sprintf("✨ Approved %d technical term(s) added to Domain Dictionary!", addedCount))
+	a.MM.LogToUI(fmt.Sprintf("✨ Approved %d technical term(s) and saved to local shard!", addedCount))
 	return fmt.Sprintf("%d terms approved", addedCount), nil
+}
+
+func (a *App) GetAuditData(jobID string, auditType string) (string, error) {
+	jobID = strings.Trim(strings.TrimSpace(jobID), "\"'")
+
+	folder := "out_TranscriptAggregator"
+	file := "master_transcript.json"
+
+	if auditType == "NMT" {
+		folder = "out_NMTTranslator"
+		file = "master_translated.json"
+	}
+
+	path := filepath.Join(a.MM.ProjectRoot, "workspace", "jobs", jobID, folder, file)
+
+	bytes, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("failed to read audit file: %v", err)
+	}
+
+	return string(bytes), nil
 }

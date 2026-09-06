@@ -28,8 +28,12 @@ func main() {
 
 	checkpointManager := broker.NewCheckpointManager()
 
-	// 🛡️ Removed global pythonExec, now injected dynamically by environment
-	memoryManager := broker.NewMemoryManager(5000.0, projectRoot, checkpointManager)
+	// 🛡️ NEW: Initialize the Git Sync Manager
+	syncManager := broker.NewGitSyncManager(projectRoot)
+	//go syncManager.Start()
+
+	// 🛡️ NEW: Pass syncManager to NewMemoryManager
+	memoryManager := broker.NewMemoryManager(5000.0, projectRoot, checkpointManager, syncManager)
 	dagExecutor := pipeline.NewDAGExecutor(memoryManager, checkpointManager, projectRoot)
 
 	for jobID, job := range checkpointManager.ActiveJobs {
