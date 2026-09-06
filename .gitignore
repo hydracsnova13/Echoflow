@@ -19,6 +19,10 @@ workspace/cache/*
 !workspace/inbox/.gitkeep
 !workspace/cache/.gitkeep
 
+# Local user dictionary shards (prevent shards from being visible across users)
+pipeline/config/shards/*
+!pipeline/config/shards/.gitkeep
+
 # Local cache (HuggingFace tokens, agent harnesses, xet, locks)
 local_cache/
 

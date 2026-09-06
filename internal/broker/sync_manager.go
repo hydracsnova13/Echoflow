@@ -17,14 +17,16 @@ import (
 type SyncStatus string
 
 const (
-	SyncOnline  SyncStatus = "🟢 Synced (Online)"
-	SyncPending SyncStatus = "🟡 Pending Sync (Offline)"
-	SyncError   SyncStatus = "🔴 Sync Error"
+	SyncOnline    SyncStatus = "🟢 Synced (Online)"
+	SyncPending   SyncStatus = "🟡 Pending Sync (Offline)"
+	SyncError     SyncStatus = "🔴 Sync Error"
+	SyncAuthError SyncStatus = "🔴 GitHub Auth Failed"
 )
 
 type GitSyncManager struct {
 	ProjectRoot string
 	Status      SyncStatus
+	LastError   string
 	mu          sync.RWMutex
 }
 
@@ -35,13 +37,48 @@ func NewGitSyncManager(root string) *GitSyncManager {
 	}
 }
 
+func parseGitError(output string, err error) (bool, string) {
+	lower := strings.ToLower(output)
+	if strings.Contains(lower, "could not read username") ||
+		strings.Contains(lower, "authentication failed") ||
+		strings.Contains(lower, "invalid username or password") ||
+		strings.Contains(lower, "permission denied (publickey)") ||
+		strings.Contains(lower, "password authentication was removed") ||
+		strings.Contains(lower, "terminal prompts disabled") ||
+		strings.Contains(lower, "access denied") ||
+		strings.Contains(lower, "not authorized") ||
+		strings.Contains(lower, "repository not found") ||
+		strings.Contains(lower, "logon failed") {
+		return true, "GitHub Login / Auth Failed (Check GitHub Credentials/Token)"
+	}
+
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "fatal:") || strings.HasPrefix(line, "error:") || strings.HasPrefix(line, "remote:") {
+			return false, line
+		}
+	}
+
+	if err != nil {
+		return false, err.Error()
+	}
+	return false, "Git operation failed"
+}
+
 func (gsm *GitSyncManager) GetStatus() string {
 	gsm.mu.RLock()
 	defer gsm.mu.RUnlock()
 
-	shardsPath := filepath.Join("pipeline", "config", "shards")
+	// 🛡️ CRITICAL: Never mask an active error or auth error with SyncPending!
+	if gsm.Status == SyncError || gsm.Status == SyncAuthError {
+		if gsm.LastError != "" {
+			return fmt.Sprintf("%s: %s", gsm.Status, gsm.LastError)
+		}
+		return string(gsm.Status)
+	}
+
 	dictPath := filepath.Join("pipeline", "config", "domain_dictionary.json")
-	cmd := exec.Command("git", "-C", gsm.ProjectRoot, "status", shardsPath, dictPath, "-sb")
+	cmd := exec.Command("git", "-C", gsm.ProjectRoot, "status", dictPath, "-sb")
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 
 	out, err := cmd.Output()
@@ -266,19 +303,30 @@ func (gsm *GitSyncManager) getMachineID() string {
 	return ""
 }
 
-// fetchRemoteConfigSync fetches origin/main and pulls down remote shards and domain_dictionary.json
-// strictly restricted to pipeline/config/ without touching ANY file outside of pipeline/config/
+// fetchRemoteConfigSync fetches origin/main and pulls down remote domain_dictionary.json
+// strictly restricted to pipeline/config/domain_dictionary.json (shards are local and gitignored).
 func (gsm *GitSyncManager) fetchRemoteConfigSync(machineID string, logToUI func(string)) error {
 	gsm.clearGitLock()
 
-	// 1. Fetch remote tracking refs (does NOT touch any working tree files)
+	// 1. Fetch remote tracking refs (fails immediately if auth fails without hanging)
 	cmdFetch := exec.Command("git", "-C", gsm.ProjectRoot, "fetch", "origin", "main")
+	cmdFetch.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	cmdFetch.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	if fetchOut, err := cmdFetch.CombinedOutput(); err != nil {
-		if logToUI != nil {
-			logToUI(fmt.Sprintf("🟡 [SyncManager] Git Fetch Note: %s", string(fetchOut)))
+		isAuth, errMsg := parseGitError(string(fetchOut), err)
+		gsm.mu.Lock()
+		if isAuth {
+			gsm.Status = SyncAuthError
+			gsm.LastError = errMsg
+		} else {
+			gsm.Status = SyncError
+			gsm.LastError = errMsg
 		}
-		return err
+		gsm.mu.Unlock()
+		if logToUI != nil {
+			logToUI(fmt.Sprintf("🔴 [SyncManager] Git Fetch Error: %s", string(fetchOut)))
+		}
+		return fmt.Errorf("%s", gsm.LastError)
 	}
 
 	// 2. Checkout remote domain_dictionary.json
@@ -287,30 +335,7 @@ func (gsm *GitSyncManager) fetchRemoteConfigSync(machineID string, logToUI func(
 	cmdCheckoutDict.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	cmdCheckoutDict.CombinedOutput()
 
-	// 3. Find any remote shards on origin/main and checkout only shards belonging to other machines
-	shardsRelDir := filepath.Join("pipeline", "config", "shards")
-	cmdLs := exec.Command("git", "-C", gsm.ProjectRoot, "ls-tree", "--name-only", "origin/main", shardsRelDir+"/")
-	cmdLs.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	lsOut, err := cmdLs.Output()
-	if err == nil {
-		lines := strings.Split(strings.TrimSpace(string(lsOut)), "\n")
-		myShardName := fmt.Sprintf("dict_%s.json", machineID)
-		for _, line := range lines {
-			remoteShard := strings.TrimSpace(line)
-			if remoteShard == "" {
-				continue
-			}
-			// Never overwrite the local machine's shard with remote
-			if machineID != "" && filepath.Base(remoteShard) == myShardName {
-				continue
-			}
-			cmdCheckoutShard := exec.Command("git", "-C", gsm.ProjectRoot, "checkout", "origin/main", "--", remoteShard)
-			cmdCheckoutShard.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-			cmdCheckoutShard.CombinedOutput()
-		}
-	}
-
-	// 4. Unstage pipeline/config so nothing is left staged in git index
+	// 3. Unstage pipeline/config so nothing is left staged in git index
 	cmdReset := exec.Command("git", "-C", gsm.ProjectRoot, "reset", "HEAD", "--", "pipeline/config")
 	cmdReset.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	cmdReset.CombinedOutput()
@@ -319,8 +344,8 @@ func (gsm *GitSyncManager) fetchRemoteConfigSync(machineID string, logToUI func(
 }
 
 // SyncLocal updates domain_dictionary.json with the changes from the user's local shard,
-// and stages/commits/pushes ONLY the local shard and domain_dictionary.json.
-// No other files in the repository are ever affected or committed.
+// and stages/commits/pushes ONLY domain_dictionary.json.
+// The user's local shard remains private and gitignored on disk, never committed or visible to others.
 func (gsm *GitSyncManager) SyncLocal(machineID string, logToUI func(string)) (string, error) {
 	if machineID == "" {
 		machineID = gsm.getMachineID()
@@ -339,6 +364,10 @@ func (gsm *GitSyncManager) SyncLocal(machineID string, logToUI func(string)) (st
 		if logToUI != nil {
 			logToUI("⚠️ [SyncManager] " + msg)
 		}
+		gsm.mu.Lock()
+		gsm.Status = SyncError
+		gsm.LastError = msg
+		gsm.mu.Unlock()
 		return msg, err
 	}
 
@@ -348,6 +377,10 @@ func (gsm *GitSyncManager) SyncLocal(machineID string, logToUI func(string)) (st
 		if logToUI != nil {
 			logToUI("🔴 [SyncManager] " + msg)
 		}
+		gsm.mu.Lock()
+		gsm.Status = SyncError
+		gsm.LastError = msg
+		gsm.mu.Unlock()
 		return msg, err
 	}
 
@@ -397,6 +430,10 @@ func (gsm *GitSyncManager) SyncLocal(machineID string, logToUI func(string)) (st
 		if logToUI != nil {
 			logToUI("🔴 [SyncManager] " + msg)
 		}
+		gsm.mu.Lock()
+		gsm.Status = SyncError
+		gsm.LastError = msg
+		gsm.mu.Unlock()
 		return msg, err
 	}
 
@@ -405,79 +442,121 @@ func (gsm *GitSyncManager) SyncLocal(machineID string, logToUI func(string)) (st
 			len(currentDict.AsrCorrections), len(currentDict.DomainTerms)))
 	}
 
-	// 4. Git operations: STRICTLY SPECIFIC to local shard and domain_dictionary.json
+	// 4. Git operations: Stage and commit ONLY domain_dictionary.json (shard is gitignored)
 	gsm.clearGitLock()
 
-	// Unstage any other files in git index to guarantee absolute isolation
+	// Unstage any other files in git index
 	cmdResetIndex := exec.Command("git", "-C", gsm.ProjectRoot, "reset", "HEAD", "--")
 	cmdResetIndex.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	cmdResetIndex.CombinedOutput()
 
-	// Stage ONLY the local shard and domain_dictionary.json
-	cmdAdd := exec.Command("git", "-C", gsm.ProjectRoot, "add", "--", shardRelPath, dictRelPath)
+	// Stage ONLY domain_dictionary.json
+	cmdAdd := exec.Command("git", "-C", gsm.ProjectRoot, "add", "--", dictRelPath)
 	cmdAdd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	if out, err := cmdAdd.CombinedOutput(); err != nil && logToUI != nil {
 		logToUI(fmt.Sprintf("🟡 [SyncManager] Git Add Note: %s", string(out)))
 	}
 
-	// Commit ONLY the local shard and domain_dictionary.json
-	commitMsg := fmt.Sprintf("Sync local dictionary shard (%s) and update domain dictionary", machineID)
-	cmdCommit := exec.Command("git", "-C", gsm.ProjectRoot, "commit", "-m", commitMsg, "--", shardRelPath, dictRelPath)
+	// Commit ONLY domain_dictionary.json
+	commitMsg := fmt.Sprintf("Update domain dictionary with local contributions (%s)", machineID)
+	cmdCommit := exec.Command("git", "-C", gsm.ProjectRoot, "commit", "-m", commitMsg, "--", dictRelPath)
 	cmdCommit.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	cmdCommit.CombinedOutput()
 
 	if !gsm.isOnline() {
 		gsm.mu.Lock()
 		gsm.Status = SyncPending
+		gsm.LastError = ""
 		gsm.mu.Unlock()
 		if logToUI != nil {
-			logToUI("📡 [SyncManager] Offline: Local shard and domain dictionary committed locally. Push deferred.")
+			logToUI("📡 [SyncManager] Offline: Domain dictionary committed locally. Push deferred.")
 		}
 		return "Committed locally (Offline)", nil
 	}
 
-	// Push commit to GitHub origin/main
+	// Push commit to GitHub origin/main with GIT_TERMINAL_PROMPT=0
 	cmdPush := exec.Command("git", "-C", gsm.ProjectRoot, "push", "origin", "main")
+	cmdPush.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	cmdPush.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	pushOut, err := cmdPush.CombinedOutput()
 
 	if err != nil {
-		// If rejected because remote has changes, use --autostash --rebase so working tree is untouched
+		isAuth, authErrMsg := parseGitError(string(pushOut), err)
+		if isAuth {
+			gsm.mu.Lock()
+			gsm.Status = SyncAuthError
+			gsm.LastError = authErrMsg
+			gsm.mu.Unlock()
+			if logToUI != nil {
+				logToUI(fmt.Sprintf("🔴 [SyncManager] %s: %s", gsm.Status, string(pushOut)))
+			}
+			return authErrMsg, fmt.Errorf("%s", authErrMsg)
+		}
+
+		// If rejected because remote has changes, use --autostash --rebase
 		gsm.clearGitLock()
 		cmdRebase := exec.Command("git", "-C", gsm.ProjectRoot, "pull", "--autostash", "--rebase", "origin", "main")
+		cmdRebase.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 		cmdRebase.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-		cmdRebase.CombinedOutput()
+		rebaseOut, rebaseErr := cmdRebase.CombinedOutput()
+
+		if rebaseErr != nil {
+			isAuthRebase, rebaseErrMsg := parseGitError(string(rebaseOut), rebaseErr)
+			gsm.mu.Lock()
+			if isAuthRebase {
+				gsm.Status = SyncAuthError
+				gsm.LastError = rebaseErrMsg
+			} else {
+				gsm.Status = SyncError
+				gsm.LastError = rebaseErrMsg
+			}
+			gsm.mu.Unlock()
+			if logToUI != nil {
+				logToUI(fmt.Sprintf("🔴 [SyncManager] Git Rebase Error: %s", string(rebaseOut)))
+			}
+			return gsm.LastError, rebaseErr
+		}
 
 		cmdPushRetry := exec.Command("git", "-C", gsm.ProjectRoot, "push", "origin", "main")
+		cmdPushRetry.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 		cmdPushRetry.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 		pushRetryOut, retryErr := cmdPushRetry.CombinedOutput()
 
 		if retryErr != nil {
+			isAuthRetry, retryErrMsg := parseGitError(string(pushRetryOut), retryErr)
 			gsm.mu.Lock()
-			gsm.Status = SyncError
+			if isAuthRetry {
+				gsm.Status = SyncAuthError
+				gsm.LastError = retryErrMsg
+			} else {
+				gsm.Status = SyncError
+				gsm.LastError = retryErrMsg
+			}
 			gsm.mu.Unlock()
 			if logToUI != nil {
 				logToUI(fmt.Sprintf("🔴 [SyncManager] Git Push Error: %s", string(pushRetryOut)+string(pushOut)))
 			}
-			return "Push Failed", retryErr
+			return gsm.LastError, retryErr
 		}
 	}
 
 	gsm.mu.Lock()
 	gsm.Status = SyncOnline
+	gsm.LastError = ""
 	gsm.mu.Unlock()
 	if logToUI != nil {
-		logToUI("🌐 [SyncManager] Successfully pushed local shard & domain dictionary to GitHub (no other files affected).")
+		logToUI("🌐 [SyncManager] Successfully pushed domain dictionary to GitHub (local shard kept private).")
 	}
-	return "Synced Local to GitHub", nil
+	return "Synced Domain Dictionary to GitHub", nil
 }
 
-// SyncGlobal pulls remote shards and domain_dictionary.json strictly from GitHub.
+// SyncGlobal pulls remote domain_dictionary.json strictly from GitHub and consolidates with the local shard.
 // No other files in the repository are ever affected or modified.
 func (gsm *GitSyncManager) SyncGlobal(logToUI func(string)) (string, error) {
 	if !gsm.isOnline() {
 		gsm.mu.Lock()
 		gsm.Status = SyncPending
+		gsm.LastError = "System is offline"
 		gsm.mu.Unlock()
 		if logToUI != nil {
 			logToUI("📡 [SyncManager] System is offline. Cannot pull from GitHub.")
@@ -487,40 +566,57 @@ func (gsm *GitSyncManager) SyncGlobal(logToUI func(string)) (string, error) {
 
 	machineID := gsm.getMachineID()
 	if err := gsm.fetchRemoteConfigSync(machineID, logToUI); err != nil {
-		gsm.mu.Lock()
-		gsm.Status = SyncError
-		gsm.mu.Unlock()
-		return "Fetch Failed", err
+		return gsm.LastError, err
 	}
 
-	// Recompile domain dictionary with newly pulled remote shards
+	// Recompile domain dictionary with newly pulled remote dictionary + local shard
 	if err := gsm.CompileDictionary(logToUI); err != nil {
+		gsm.mu.Lock()
+		gsm.Status = SyncError
+		gsm.LastError = fmt.Sprintf("Compile Failed: %v", err)
+		gsm.mu.Unlock()
 		return "Compile Failed", err
 	}
 
 	gsm.mu.Lock()
 	gsm.Status = SyncOnline
+	gsm.LastError = ""
 	gsm.mu.Unlock()
 	if logToUI != nil {
-		logToUI("🌐 [SyncManager] Successfully pulled remote dictionary shards from GitHub (no other files affected).")
+		logToUI("🌐 [SyncManager] Successfully pulled remote domain dictionary from GitHub (local shard kept private).")
 	}
-	return "Global Shards Synced", nil
+	return "Global Dictionary Synced", nil
 }
 
-// UpdateDomainDictionary pulls global dictionary changes and compiles all shards into domain_dictionary.json.
+// UpdateDomainDictionary pulls global dictionary changes and compiles all local shards into domain_dictionary.json.
 // No other files in the repository are ever affected or modified.
 func (gsm *GitSyncManager) UpdateDomainDictionary(logToUI func(string)) (string, error) {
 	if gsm.isOnline() {
 		machineID := gsm.getMachineID()
-		gsm.fetchRemoteConfigSync(machineID, logToUI)
+		if err := gsm.fetchRemoteConfigSync(machineID, logToUI); err != nil {
+			if logToUI != nil {
+				logToUI(fmt.Sprintf("⚠️ [SyncManager] Remote fetch failed (%v). Compiling with local dictionary data.", err))
+			}
+			gsm.CompileDictionary(logToUI)
+			return gsm.LastError, err
+		}
 	}
 
 	if err := gsm.CompileDictionary(logToUI); err != nil {
+		gsm.mu.Lock()
+		gsm.Status = SyncError
+		gsm.LastError = fmt.Sprintf("Compile Failed: %v", err)
+		gsm.mu.Unlock()
 		return "Compile Failed", err
 	}
 
+	gsm.mu.Lock()
+	gsm.Status = SyncOnline
+	gsm.LastError = ""
+	gsm.mu.Unlock()
+
 	if logToUI != nil {
-		logToUI("📖 [SyncManager] Global Domain Dictionary updated and consolidated with all shards (no other files affected).")
+		logToUI("📖 [SyncManager] Global Domain Dictionary updated and consolidated with local shard.")
 	}
 	return "Domain Dictionary Updated", nil
 }

@@ -1535,7 +1535,7 @@
 
             <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
                 <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;" id="syncControls">
-                    <span id="syncStatusIndicator" class="dict-btn dict-btn-secondary" style="font-size: 0.8rem; padding: 6px 12px; pointer-events: none; cursor: default;">
+                    <span id="syncStatusIndicator" class="dict-btn dict-btn-secondary" style="font-size: 0.8rem; padding: 6px 12px; cursor: pointer;" onclick="onSyncIndicatorClick()" title="Sync Status">
                         📡 Checking...
                     </span>
                     <button class="dict-btn dict-btn-primary" id="btnSyncLocal" onclick="syncLocalShard()"
@@ -2918,7 +2918,7 @@
                         btn.disabled = false;
                         btn.innerText = origText;
                     }
-                    showToast("📤 Local shard synced to GitHub & domain dictionary updated!", true);
+                    showToast("📤 Local shard merged into domain dictionary & pushed to GitHub!", true);
                     pollSyncStatus();
                 }).catch(err => {
                     isSyncing = false;
@@ -3027,22 +3027,41 @@
             syncLocalShard();
         }
 
+        let lastSyncStatusDetail = "";
+
+        function onSyncIndicatorClick() {
+            if (lastSyncStatusDetail && (lastSyncStatusDetail.includes("🔴") || lastSyncStatusDetail.includes("Error") || lastSyncStatusDetail.includes("Failed"))) {
+                alert("Git Sync Diagnostics:\n\n" + lastSyncStatusDetail + "\n\nPlease ensure your GitHub credentials or Personal Access Token (PAT) are properly configured for this repository.");
+            } else {
+                pollSyncStatus();
+            }
+        }
+
         function pollSyncStatus() {
             if (isSyncing) return;
 
             if (!window.go || !window.go.main || !window.go.main.App.GetSyncStatus) return;
             window.go.main.App.GetSyncStatus().then(status => {
                 let el = document.getElementById('syncStatusIndicator');
+                if (!el) return;
+                lastSyncStatusDetail = status;
 
-                if (status.includes("🟢") || status.includes("Online") || status.includes("Synced")) {
+                if (status.includes("🔴") || status.includes("Error") || status.includes("Failed")) {
+                    el.className = 'dict-btn dict-btn-danger';
+                    if (status.includes("Auth") || status.includes("Login") || status.includes("Credentials")) {
+                        el.innerText = '🔴 GitHub Auth Failed';
+                    } else {
+                        el.innerText = '🔴 Sync Error';
+                    }
+                    el.title = status + " (Click for details)";
+                } else if (status.includes("🟢") || status.includes("Online") || status.includes("Synced")) {
                     el.className = 'dict-btn dict-btn-success';
                     el.innerText = '🟢 Synced (Up to date)';
-                } else if (status.includes("🔴") || status.includes("Error")) {
-                    el.className = 'dict-btn dict-btn-danger';
-                    el.innerText = '🔴 Sync Failed (Retry)';
+                    el.title = 'Domain dictionary synchronized with GitHub';
                 } else {
                     el.className = 'dict-btn dict-btn-warning';
                     el.innerText = '🟡 Pending Sync (Click to Push)';
+                    el.title = 'Local dictionary changes pending push to GitHub';
                 }
             });
         }
