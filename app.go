@@ -193,13 +193,63 @@ func (a *App) RunSetupScript(machineID string, hfToken string) (string, error) {
 }
 
 type JobSummary struct {
-	ID       string `json:"id"`
-	Status   string `json:"status"`
-	Progress int    `json:"progress"`
+	ID          string `json:"id"`
+	Status      string `json:"status"`
+	Progress    int    `json:"progress"`
+	SourceFile  string `json:"source_file"`
+	SourceTitle string `json:"source_title"`
+	CreatedAt   string `json:"created_at"`
+	Timestamp   int64  `json:"timestamp"`
+	TotalTasks  int    `json:"total_tasks"`
+	DoneTasks   int    `json:"done_tasks"`
+	HasMedia    bool   `json:"has_media"`
+	CanAuditASR bool   `json:"can_audit_asr"`
+	CanAuditNMT bool   `json:"can_audit_nmt"`
+}
+
+func (a *App) getJobsDir() string {
+	if a.MM != nil && a.MM.ProjectRoot != "" {
+		cand := filepath.Join(a.MM.ProjectRoot, "workspace", "jobs")
+		if info, err := os.Stat(cand); err == nil && info.IsDir() {
+			return cand
+		}
+	}
+
+	if cwd, err := os.Getwd(); err == nil {
+		curr := cwd
+		for i := 0; i < 5; i++ {
+			cand := filepath.Join(curr, "workspace", "jobs")
+			if info, err := os.Stat(cand); err == nil && info.IsDir() {
+				return cand
+			}
+			parent := filepath.Dir(curr)
+			if parent == curr {
+				break
+			}
+			curr = parent
+		}
+	}
+
+	if exe, err := os.Executable(); err == nil {
+		curr := filepath.Dir(exe)
+		for i := 0; i < 5; i++ {
+			cand := filepath.Join(curr, "workspace", "jobs")
+			if info, err := os.Stat(cand); err == nil && info.IsDir() {
+				return cand
+			}
+			parent := filepath.Dir(curr)
+			if parent == curr {
+				break
+			}
+			curr = parent
+		}
+	}
+
+	return filepath.Join(a.MM.ProjectRoot, "workspace", "jobs")
 }
 
 func (a *App) GetRecentCheckpoints() ([]JobSummary, error) {
-	jobsDir := filepath.Join(a.MM.ProjectRoot, "workspace", "jobs")
+	jobsDir := a.getJobsDir()
 	entries, err := os.ReadDir(jobsDir)
 	if err != nil {
 		return []JobSummary{}, nil
@@ -208,10 +258,17 @@ func (a *App) GetRecentCheckpoints() ([]JobSummary, error) {
 	var jobs []JobSummary
 	for _, entry := range entries {
 		if entry.IsDir() && strings.HasPrefix(entry.Name(), "JOB-") {
-			manifestPath := filepath.Join(jobsDir, entry.Name(), "manifest.json")
+			jobDirPath := filepath.Join(jobsDir, entry.Name())
+			manifestPath := filepath.Join(jobDirPath, "manifest.json")
 			fileData, err := os.ReadFile(manifestPath)
 			if err != nil {
 				continue
+			}
+
+			info, _ := entry.Info()
+			modTime := time.Now()
+			if info != nil {
+				modTime = info.ModTime()
 			}
 
 			var state map[string]interface{}
@@ -219,6 +276,15 @@ func (a *App) GetRecentCheckpoints() ([]JobSummary, error) {
 				status := "UNKNOWN"
 				if s, ok := state["status"].(string); ok {
 					status = s
+				}
+
+				sourceFile := ""
+				if sf, ok := state["source_file"].(string); ok {
+					sourceFile = sf
+				}
+				sourceTitle := filepath.Base(sourceFile)
+				if sourceTitle == "" || sourceTitle == "." {
+					sourceTitle = entry.Name()
 				}
 
 				total, done := 0, 0
@@ -271,21 +337,98 @@ func (a *App) GetRecentCheckpoints() ([]JobSummary, error) {
 					}
 				}
 
+				// Check output media existence
+				hasMedia := false
+				mcDir := filepath.Join(jobDirPath, "out_MediaCompositor")
+				if mcEntries, err := os.ReadDir(mcDir); err == nil {
+					for _, me := range mcEntries {
+						if strings.HasPrefix(me.Name(), "final_recomposed") {
+							hasMedia = true
+							break
+						}
+					}
+				}
+				if !hasMedia {
+					vdDir := filepath.Join(jobDirPath, "out_VoiceDubber")
+					if vdEntries, err := os.ReadDir(vdDir); err == nil && len(vdEntries) > 0 {
+						hasMedia = true
+					}
+				}
+
+				// Check audit readiness
+				canAuditASR := false
+				asrPath := filepath.Join(jobDirPath, "out_TranscriptAggregator", "master_transcript.json")
+				if _, err := os.Stat(asrPath); err == nil {
+					if auditDone, ok := state["audit_asr_done"].(bool); !ok || !auditDone || status == "AUDIT_ASR" {
+						canAuditASR = true
+					}
+				}
+
+				canAuditNMT := false
+				nmtPath := filepath.Join(jobDirPath, "out_NMTTranslator", "master_translated.json")
+				if _, err := os.Stat(nmtPath); err == nil {
+					if auditDone, ok := state["audit_nmt_done"].(bool); !ok || !auditDone || status == "AUDIT_NMT" {
+						canAuditNMT = true
+					}
+				}
+
 				jobs = append(jobs, JobSummary{
-					ID:       entry.Name(),
-					Status:   status,
-					Progress: progress,
+					ID:          entry.Name(),
+					Status:      status,
+					Progress:    progress,
+					SourceFile:  sourceFile,
+					SourceTitle: sourceTitle,
+					CreatedAt:   modTime.Format("02 Jan, 15:04"),
+					Timestamp:   modTime.Unix(),
+					TotalTasks:  total,
+					DoneTasks:   done,
+					HasMedia:    hasMedia,
+					CanAuditASR: canAuditASR,
+					CanAuditNMT: canAuditNMT,
 				})
 			}
 		}
 	}
 
 	sort.Slice(jobs, func(i, j int) bool {
+		if jobs[i].Timestamp != jobs[j].Timestamp {
+			return jobs[i].Timestamp > jobs[j].Timestamp
+		}
 		return jobs[i].ID > jobs[j].ID
 	})
 
 	return jobs, nil
 }
+
+func (a *App) OpenJobFolder(jobID string) error {
+	jobID = strings.TrimSpace(jobID)
+	if jobID == "" {
+		return fmt.Errorf("invalid job ID")
+	}
+	jobsDir := a.getJobsDir()
+	targetDir := filepath.Join(jobsDir, jobID)
+	if info, err := os.Stat(targetDir); err != nil || !info.IsDir() {
+		return fmt.Errorf("job folder not found: %s", targetDir)
+	}
+
+	cmd := exec.Command("explorer", targetDir)
+	return cmd.Start()
+}
+
+func (a *App) GetJobManifest(jobID string) (string, error) {
+	jobID = strings.TrimSpace(jobID)
+	if jobID == "" {
+		return "", fmt.Errorf("invalid job ID")
+	}
+	jobsDir := a.getJobsDir()
+	manifestPath := filepath.Join(jobsDir, jobID, "manifest.json")
+	bytes, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return "", fmt.Errorf("checkpoint manifest not found: %w", err)
+	}
+	return string(bytes), nil
+}
+
 
 // 🛡️ FULL UI PARAMETER INJECTION: Ensures all configs from frontend are perfectly bridged to the Python daemons
 func (a *App) SubmitJob(targetPath string, sourceLang string, targetLang string, targetOutFormat string, numSpeakers string, transcriptionQuality string, dubCloning string, dubSpeed string, subtitleMode string) (string, error) {
@@ -423,9 +566,9 @@ func (a *App) ResumeJob(jobID string) error {
 var mediaServerOnce sync.Once
 
 func (a *App) GetJobOutputPath(jobID string) map[string]string {
+	jobsDir := a.getJobsDir()
 	mediaServerOnce.Do(func() {
-		workspaceDir := filepath.Join(a.MM.ProjectRoot, "workspace", "jobs")
-		http.Handle("/media/", http.StripPrefix("/media/", http.FileServer(http.Dir(workspaceDir))))
+		http.Handle("/media/", http.StripPrefix("/media/", http.FileServer(http.Dir(jobsDir))))
 		go func() {
 			fmt.Println("🎬 Local Media Server started on http://localhost:9999")
 			http.ListenAndServe(":9999", nil)
@@ -433,29 +576,40 @@ func (a *App) GetJobOutputPath(jobID string) map[string]string {
 	})
 
 	res := map[string]string{"Path": "", "Format": "", "Content": "", "Error": ""}
-	outDir := filepath.Join(a.MM.ProjectRoot, "workspace", "jobs", jobID, "out_MediaCompositor")
 
-	entries, err := os.ReadDir(outDir)
-	if err != nil {
-		res["Error"] = "Output directory not found"
-		return res
-	}
+	// 1. Check out_MediaCompositor (Video / Recomposed)
+	outDir := filepath.Join(jobsDir, jobID, "out_MediaCompositor")
+	if entries, err := os.ReadDir(outDir); err == nil {
+		for _, e := range entries {
+			if strings.HasPrefix(e.Name(), "final_recomposed") {
+				absPath := filepath.Join(outDir, e.Name())
+				ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(e.Name()), "."))
 
-	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), "final_recomposed") {
-			absPath := filepath.Join(outDir, e.Name())
-			ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(e.Name()), "."))
+				res["Path"] = fmt.Sprintf("http://localhost:9999/media/%s/out_MediaCompositor/%s", jobID, e.Name())
+				res["Format"] = ext
 
-			res["Path"] = fmt.Sprintf("http://localhost:9999/media/%s/out_MediaCompositor/%s", jobID, e.Name())
-			res["Format"] = ext
-
-			if ext == "srt" || ext == "txt" || ext == "json" {
-				bytes, _ := os.ReadFile(absPath)
-				res["Content"] = string(bytes)
+				if ext == "srt" || ext == "txt" || ext == "json" {
+					bytes, _ := os.ReadFile(absPath)
+					res["Content"] = string(bytes)
+				}
+				return res
 			}
-			return res
 		}
 	}
+
+	// 2. Check out_VoiceDubber (Dubbed Audio)
+	vdDir := filepath.Join(jobsDir, jobID, "out_VoiceDubber")
+	if entries, err := os.ReadDir(vdDir); err == nil {
+		for _, e := range entries {
+			ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(e.Name()), "."))
+			if ext == "wav" || ext == "mp3" || ext == "aac" || ext == "flac" || ext == "ogg" {
+				res["Path"] = fmt.Sprintf("http://localhost:9999/media/%s/out_VoiceDubber/%s", jobID, e.Name())
+				res["Format"] = ext
+				return res
+			}
+		}
+	}
+
 	res["Error"] = "Final media not found"
 	return res
 }
@@ -625,6 +779,53 @@ func (a *App) UpdateDomainDictionary() (string, error) {
 		return "", err
 	}
 	return a.GetGlobalDictionary()
+}
+
+// ==========================================
+// 📊 TELEMETRY & LOG STORAGE MANAGEMENT
+// ==========================================
+
+func (a *App) GetLogStorageStats() (broker.LogStorageStats, error) {
+	if a.MM.TelemetryLogger == nil {
+		return broker.LogStorageStats{}, fmt.Errorf("telemetry logger not initialized")
+	}
+	return a.MM.TelemetryLogger.GetStorageStats()
+}
+
+func (a *App) DeleteLogsByFilter(periodValue int, periodUnit string, clearAll bool) (broker.DeleteResult, error) {
+	if a.MM.TelemetryLogger == nil {
+		return broker.DeleteResult{}, fmt.Errorf("telemetry logger not initialized")
+	}
+
+	if clearAll || periodValue <= 0 {
+		return a.MM.TelemetryLogger.ClearAllLogs()
+	}
+
+	now := time.Now()
+	var cutoff time.Time
+
+	switch strings.ToLower(strings.TrimSpace(periodUnit)) {
+	case "years", "year", "y":
+		cutoff = now.AddDate(-periodValue, 0, 0)
+	case "months", "month", "m":
+		cutoff = now.AddDate(0, -periodValue, 0)
+	case "days", "day", "d":
+		cutoff = now.AddDate(0, 0, -periodValue)
+	default:
+		cutoff = now.AddDate(0, 0, -periodValue)
+	}
+
+	return a.MM.TelemetryLogger.DeleteLogsOlderThan(cutoff)
+}
+
+func (a *App) GetRecentTelemetryLogs(limit int) ([]string, error) {
+	if a.MM.TelemetryLogger == nil {
+		return []string{}, fmt.Errorf("telemetry logger not initialized")
+	}
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	return a.MM.TelemetryLogger.GetRecentLogs(limit)
 }
 
 func deduplicateShardMap(m map[string]string) map[string]string {

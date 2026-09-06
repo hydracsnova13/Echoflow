@@ -82,6 +82,30 @@ func (cm *CheckpointManager) InitializeJob(jobID, sourceFile, workspaceRoot stri
 	return manifest
 }
 
+func (cm *CheckpointManager) LoadJob(jobDir string) *JobManifest {
+	manifestPath := filepath.Join(jobDir, "manifest.json")
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return nil
+	}
+
+	manifest := &JobManifest{
+		GlobalTasks: make(map[string]ExecutionState),
+		Chunks:      make(map[string]*ChunkState),
+		manifestDir: jobDir,
+	}
+
+	if err := json.Unmarshal(data, manifest); err != nil {
+		return nil
+	}
+
+	cm.mu.Lock()
+	cm.ActiveJobs[manifest.JobID] = manifest
+	cm.mu.Unlock()
+
+	return manifest
+}
+
 func (cm *CheckpointManager) GetJob(jobID string) *JobManifest {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()

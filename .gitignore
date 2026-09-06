@@ -13,11 +13,14 @@
 workspace/jobs/*
 workspace/inbox/*
 workspace/cache/*
+workspace/logs/*
 
 # Preserve directory structure for fresh clones
 !workspace/jobs/.gitkeep
 !workspace/inbox/.gitkeep
 !workspace/cache/.gitkeep
+!workspace/logs/
+!workspace/logs/.gitkeep
 
 # Local user dictionary shards (prevent shards from being visible across users)
 pipeline/config/shards/*
@@ -286,7 +289,7 @@ $RECYCLE.BIN/
 # =============================================================================
 # Log files
 *.log
-logs/
+/logs/
 *.log.*
 npm-debug.log*
 yarn-debug.log*

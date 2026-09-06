@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"ecoflow/internal/broker"
 	"ecoflow/internal/pipeline"
@@ -18,15 +19,65 @@ import (
 //go:embed all:frontend/src
 var assets embed.FS
 
-func main() {
-	cwd, _ := os.Getwd()
-	projectRoot := cwd
+func isProjectRoot(dir string) bool {
+	if _, err := os.Stat(filepath.Join(dir, "workspace")); err == nil {
+		if _, err := os.Stat(filepath.Join(dir, "pipeline")); err == nil {
+			return true
+		}
+	}
+	return false
+}
 
-	if filepath.Base(cwd) == "bin" && filepath.Base(filepath.Dir(cwd)) == "build" {
-		projectRoot = filepath.Dir(filepath.Dir(cwd))
+func resolveProjectRoot() string {
+	// Priority 1: Check executable path and traverse up
+	if exePath, err := os.Executable(); err == nil {
+		curr := filepath.Dir(exePath)
+		for i := 0; i < 5; i++ {
+			if isProjectRoot(curr) {
+				return curr
+			}
+			parent := filepath.Dir(curr)
+			if parent == curr {
+				break
+			}
+			curr = parent
+		}
 	}
 
+	// Priority 2: Check CWD and traverse up
+	if cwd, err := os.Getwd(); err == nil {
+		curr := cwd
+		for i := 0; i < 5; i++ {
+			if isProjectRoot(curr) {
+				return curr
+			}
+			parent := filepath.Dir(curr)
+			if parent == curr {
+				break
+			}
+			curr = parent
+		}
+	}
+
+	cwd, _ := os.Getwd()
+	return cwd
+}
+
+func main() {
+	projectRoot := resolveProjectRoot()
+	log.Printf("🚀 EcoFlow Governor started. Project Root: %s", projectRoot)
+
 	checkpointManager := broker.NewCheckpointManager()
+
+	// 🛡️ Load existing checkpoints from workspace/jobs
+	jobsDir := filepath.Join(projectRoot, "workspace", "jobs")
+	if entries, err := os.ReadDir(jobsDir); err == nil {
+		for _, entry := range entries {
+			if entry.IsDir() && strings.HasPrefix(entry.Name(), "JOB-") {
+				checkpointManager.LoadJob(filepath.Join(jobsDir, entry.Name()))
+			}
+		}
+	}
 
 	// 🛡️ NEW: Initialize the Git Sync Manager
 	syncManager := broker.NewGitSyncManager(projectRoot)
@@ -42,7 +93,7 @@ func main() {
 			job.Save()
 			memoryManager.LogToUI(fmt.Sprintf("▶️ Resumed Job %s from Checkpoint", jobID))
 		}
-		if job.Status != broker.JobDone {
+		if job.Status != broker.JobDone && job.Status != broker.JobAuditASR && job.Status != broker.JobAuditNMT {
 			job.ResetIncompleteTasks()
 			job.Save()
 			go dagExecutor.EvaluateJob(jobID)

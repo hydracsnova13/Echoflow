@@ -17,8 +17,8 @@ import (
 type SyncStatus string
 
 const (
-	SyncOnline    SyncStatus = "🟢 Synced (Online)"
-	SyncPending   SyncStatus = "🟡 Pending Sync (Offline)"
+	SyncOnline    SyncStatus = "🟢 Synced"
+	SyncPending   SyncStatus = "🟡 Pending Push"
 	SyncError     SyncStatus = "🔴 Sync Error"
 	SyncAuthError SyncStatus = "🔴 GitHub Auth Failed"
 )
@@ -33,7 +33,7 @@ type GitSyncManager struct {
 func NewGitSyncManager(root string) *GitSyncManager {
 	return &GitSyncManager{
 		ProjectRoot: root,
-		Status:      SyncPending,
+		Status:      SyncOnline,
 	}
 }
 
@@ -69,7 +69,7 @@ func (gsm *GitSyncManager) GetStatus() string {
 	gsm.mu.RLock()
 	defer gsm.mu.RUnlock()
 
-	// 🛡️ CRITICAL: Never mask an active error or auth error with SyncPending!
+	// 🛡️ CRITICAL: Never mask an active error or auth error!
 	if gsm.Status == SyncError || gsm.Status == SyncAuthError {
 		if gsm.LastError != "" {
 			return fmt.Sprintf("%s: %s", gsm.Status, gsm.LastError)
@@ -82,8 +82,29 @@ func (gsm *GitSyncManager) GetStatus() string {
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 
 	out, err := cmd.Output()
-	if err == nil && (strings.Contains(string(out), "ahead") || strings.Contains(string(out), "??") || strings.Contains(string(out), "M ")) {
-		return string(SyncPending)
+	if err == nil {
+		outLines := strings.Split(string(out), "\n")
+		hasAhead := false
+		hasModified := false
+
+		for _, line := range outLines {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			if strings.HasPrefix(line, "##") {
+				if strings.Contains(line, "[ahead") {
+					hasAhead = true
+				}
+			} else if strings.Contains(line, "domain_dictionary.json") {
+				hasModified = true
+			}
+		}
+
+		if hasAhead || hasModified {
+			return string(SyncPending)
+		}
+		return string(SyncOnline)
 	}
 
 	return string(gsm.Status)
@@ -117,6 +138,121 @@ type compiledDictShard struct {
 type shardWithTimestamp struct {
 	Timestamp int64
 	Data      compiledDictShard
+}
+
+type DictDiff struct {
+	AddedCorrections   map[string]string
+	UpdatedCorrections map[string]string
+	AddedTerms         map[string]string
+	UpdatedTerms       map[string]string
+	AddedPatterns      int
+}
+
+func (d *DictDiff) TotalChanges() int {
+	return len(d.AddedCorrections) + len(d.UpdatedCorrections) + len(d.AddedTerms) + len(d.UpdatedTerms) + d.AddedPatterns
+}
+
+func (d *DictDiff) Summary() string {
+	if d.TotalChanges() == 0 {
+		return "No changes (already up-to-date)"
+	}
+	var parts []string
+	if n := len(d.AddedCorrections) + len(d.UpdatedCorrections); n > 0 {
+		parts = append(parts, fmt.Sprintf("%d ASR corrections", n))
+	}
+	if n := len(d.AddedTerms) + len(d.UpdatedTerms); n > 0 {
+		parts = append(parts, fmt.Sprintf("%d domain terms", n))
+	}
+	if d.AddedPatterns > 0 {
+		parts = append(parts, fmt.Sprintf("%d pattern rules", d.AddedPatterns))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func (d *DictDiff) DetailedLogLines() []string {
+	var lines []string
+	for k, v := range d.AddedCorrections {
+		if len(lines) >= 15 {
+			lines = append(lines, fmt.Sprintf("  ... and %d more ASR corrections", len(d.AddedCorrections)-15))
+			break
+		}
+		lines = append(lines, fmt.Sprintf("  + [ASR] '%s' ➔ '%s'", k, v))
+	}
+	for k, v := range d.UpdatedCorrections {
+		if len(lines) >= 20 {
+			lines = append(lines, fmt.Sprintf("  ... and %d more updated corrections", len(d.UpdatedCorrections)-20))
+			break
+		}
+		lines = append(lines, fmt.Sprintf("  ~ [ASR Update] '%s' ➔ '%s'", k, v))
+	}
+	for k, v := range d.AddedTerms {
+		if len(lines) >= 30 {
+			lines = append(lines, fmt.Sprintf("  ... and %d more terms", len(d.AddedTerms)-30))
+			break
+		}
+		lines = append(lines, fmt.Sprintf("  + [Term] '%s' ➔ '%s'", k, v))
+	}
+	for k, v := range d.UpdatedTerms {
+		if len(lines) >= 35 {
+			lines = append(lines, fmt.Sprintf("  ... and %d more updated terms", len(d.UpdatedTerms)-35))
+			break
+		}
+		lines = append(lines, fmt.Sprintf("  ~ [Term Update] '%s' ➔ '%s'", k, v))
+	}
+	if d.AddedPatterns > 0 {
+		lines = append(lines, fmt.Sprintf("  + %d pattern / smoothing rules", d.AddedPatterns))
+	}
+	return lines
+}
+
+func computeDictDiff(base compiledDictShard, target compiledDictShard) DictDiff {
+	diff := DictDiff{
+		AddedCorrections:   make(map[string]string),
+		UpdatedCorrections: make(map[string]string),
+		AddedTerms:         make(map[string]string),
+		UpdatedTerms:       make(map[string]string),
+	}
+
+	for k, v := range target.AsrCorrections {
+		kTrim := strings.TrimSpace(k)
+		vTrim := strings.TrimSpace(v)
+		if kTrim == "" {
+			continue
+		}
+		if oldV, exists := base.AsrCorrections[kTrim]; !exists {
+			diff.AddedCorrections[kTrim] = vTrim
+		} else if oldV != vTrim {
+			diff.UpdatedCorrections[kTrim] = vTrim
+		}
+	}
+
+	for k, v := range target.DomainTerms {
+		kTrim := strings.TrimSpace(k)
+		vTrim := strings.TrimSpace(v)
+		if kTrim == "" {
+			continue
+		}
+		if oldV, exists := base.DomainTerms[kTrim]; !exists {
+			diff.AddedTerms[kTrim] = vTrim
+		} else if oldV != vTrim {
+			diff.UpdatedTerms[kTrim] = vTrim
+		}
+	}
+
+	if len(target.AsrStemPatterns) > len(base.AsrStemPatterns) {
+		diff.AddedPatterns += len(target.AsrStemPatterns) - len(base.AsrStemPatterns)
+	}
+	if len(target.SpokenEnglishSmoothing) > len(base.SpokenEnglishSmoothing) {
+		diff.AddedPatterns += len(target.SpokenEnglishSmoothing) - len(base.SpokenEnglishSmoothing)
+	}
+	if len(target.SpokenHindiSmoothing) > len(base.SpokenHindiSmoothing) {
+		diff.AddedPatterns += len(target.SpokenHindiSmoothing) - len(base.SpokenHindiSmoothing)
+	}
+	if len(target.SpokenMarathiSmoothing) > len(base.SpokenMarathiSmoothing) {
+		diff.AddedPatterns += len(target.SpokenMarathiSmoothing) - len(base.SpokenMarathiSmoothing)
+	}
+
+	return diff
 }
 
 // deduplicateMap removes duplicate keys case-insensitively, trimming whitespace
@@ -396,6 +532,11 @@ func (gsm *GitSyncManager) SyncLocal(machineID string, logToUI func(string)) (st
 		currentDict.DomainTerms = make(map[string]string)
 	}
 
+	// Clone currentDict as preMerge base for diffing
+	var preMergeDict compiledDictShard
+	preMergeBytes, _ := json.Marshal(currentDict)
+	json.Unmarshal(preMergeBytes, &preMergeDict)
+
 	// 3. Overlay local shard changes into domain_dictionary.json
 	for k, v := range localShard.AsrCorrections {
 		currentDict.AsrCorrections[k] = v
@@ -424,6 +565,9 @@ func (gsm *GitSyncManager) SyncLocal(machineID string, logToUI func(string)) (st
 	currentDict.SpokenHindiSmoothing = deduplicatePatterns(currentDict.SpokenHindiSmoothing)
 	currentDict.SpokenMarathiSmoothing = deduplicatePatterns(currentDict.SpokenMarathiSmoothing)
 
+	// Compute diff between preMergeDict and currentDict
+	diff := computeDictDiff(preMergeDict, currentDict)
+
 	updatedDictBytes, _ := json.MarshalIndent(currentDict, "", "  ")
 	if err := os.WriteFile(dictAbsPath, updatedDictBytes, 0644); err != nil {
 		msg := fmt.Sprintf("Failed to update domain_dictionary.json: %v", err)
@@ -438,8 +582,14 @@ func (gsm *GitSyncManager) SyncLocal(machineID string, logToUI func(string)) (st
 	}
 
 	if logToUI != nil {
-		logToUI(fmt.Sprintf("📖 [SyncManager] Domain dictionary updated with local changes (%d corrections, %d domain terms).",
-			len(currentDict.AsrCorrections), len(currentDict.DomainTerms)))
+		if diff.TotalChanges() > 0 {
+			logToUI(fmt.Sprintf("📖 [SyncManager] Local changes merged into Global Domain Dictionary (%s):", diff.Summary()))
+			for _, line := range diff.DetailedLogLines() {
+				logToUI("   " + line)
+			}
+		} else {
+			logToUI("ℹ️ [SyncManager] Global Domain Dictionary already contains all terms from your local shard (0 changes).")
+		}
 	}
 
 	// 4. Git operations: Stage and commit ONLY domain_dictionary.json (shard is gitignored)
@@ -458,7 +608,7 @@ func (gsm *GitSyncManager) SyncLocal(machineID string, logToUI func(string)) (st
 	}
 
 	// Commit ONLY domain_dictionary.json
-	commitMsg := fmt.Sprintf("Update domain dictionary with local contributions (%s)", machineID)
+	commitMsg := fmt.Sprintf("Update domain dictionary: %s (%s)", diff.Summary(), machineID)
 	cmdCommit := exec.Command("git", "-C", gsm.ProjectRoot, "commit", "-m", commitMsg, "--", dictRelPath)
 	cmdCommit.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	cmdCommit.CombinedOutput()
@@ -466,12 +616,12 @@ func (gsm *GitSyncManager) SyncLocal(machineID string, logToUI func(string)) (st
 	if !gsm.isOnline() {
 		gsm.mu.Lock()
 		gsm.Status = SyncPending
-		gsm.LastError = ""
+		gsm.LastError = "System is offline. Committed locally."
 		gsm.mu.Unlock()
 		if logToUI != nil {
-			logToUI("📡 [SyncManager] Offline: Domain dictionary committed locally. Push deferred.")
+			logToUI("📡 [SyncManager] Offline: Local changes committed to domain_dictionary.json locally. Push deferred.")
 		}
-		return "Committed locally (Offline)", nil
+		return fmt.Sprintf("Committed locally (Offline): %s", diff.Summary()), nil
 	}
 
 	// Push commit to GitHub origin/main with GIT_TERMINAL_PROMPT=0
@@ -545,12 +695,26 @@ func (gsm *GitSyncManager) SyncLocal(machineID string, logToUI func(string)) (st
 	gsm.LastError = ""
 	gsm.mu.Unlock()
 	if logToUI != nil {
-		logToUI("🌐 [SyncManager] Successfully pushed domain dictionary to GitHub (local shard kept private).")
+		if diff.TotalChanges() > 0 {
+			logToUI(fmt.Sprintf("🌐 [SyncManager] Successfully pushed to GitHub Global Domain Dictionary (%s)!", diff.Summary()))
+		} else {
+			logToUI("🌐 [SyncManager] Pushed to GitHub: Global Domain Dictionary is up-to-date with origin/main.")
+		}
 	}
-	return "Synced Domain Dictionary to GitHub", nil
+
+	var responseParts []string
+	if diff.TotalChanges() > 0 {
+		responseParts = append(responseParts, fmt.Sprintf("Pushed to GitHub: %s", diff.Summary()))
+		responseParts = append(responseParts, diff.DetailedLogLines()...)
+	} else {
+		responseParts = append(responseParts, "Global Domain Dictionary is up-to-date with your local shard (0 changes).")
+	}
+	return strings.Join(responseParts, "\n"), nil
 }
 
-// SyncGlobal pulls remote domain_dictionary.json strictly from GitHub and consolidates with the local shard.
+// SyncGlobal pulls remote domain_dictionary.json strictly from GitHub,
+// overlays local shard contributions, pushes them to GitHub if needed,
+// and logs in detail everything that was updated and pushed.
 // No other files in the repository are ever affected or modified.
 func (gsm *GitSyncManager) SyncGlobal(logToUI func(string)) (string, error) {
 	if !gsm.isOnline() {
@@ -564,33 +728,216 @@ func (gsm *GitSyncManager) SyncGlobal(logToUI func(string)) (string, error) {
 		return "Offline", fmt.Errorf("system is offline")
 	}
 
+	dictRelPath := filepath.Join("pipeline", "config", "domain_dictionary.json")
+	dictAbsPath := filepath.Join(gsm.ProjectRoot, dictRelPath)
+
+	// 1. Read existing local domain_dictionary.json before pulling
+	var prePullDict compiledDictShard
+	if dictBytes, err := os.ReadFile(dictAbsPath); err == nil {
+		json.Unmarshal(dictBytes, &prePullDict)
+	}
+
 	machineID := gsm.getMachineID()
+
+	// 2. Fetch remote domain_dictionary.json from origin/main
 	if err := gsm.fetchRemoteConfigSync(machineID, logToUI); err != nil {
 		return gsm.LastError, err
 	}
 
-	// Recompile domain dictionary with newly pulled remote dictionary + local shard
-	if err := gsm.CompileDictionary(logToUI); err != nil {
+	// 3. Read newly pulled remote domain_dictionary.json
+	var remoteDict compiledDictShard
+	if dictBytes, err := os.ReadFile(dictAbsPath); err == nil {
+		json.Unmarshal(dictBytes, &remoteDict)
+	}
+
+	// Compute diff between what we had locally and what came from remote
+	pulledDiff := computeDictDiff(prePullDict, remoteDict)
+
+	if logToUI != nil {
+		if pulledDiff.TotalChanges() > 0 {
+			logToUI(fmt.Sprintf("🌐 [SyncManager] Pulled updates from GitHub into Global Domain Dictionary (%s):", pulledDiff.Summary()))
+			for _, line := range pulledDiff.DetailedLogLines() {
+				logToUI("   " + line)
+			}
+		} else {
+			logToUI("🌐 [SyncManager] GitHub remote is up-to-date with local base (0 remote updates).")
+		}
+	}
+
+	// 4. Overlay local shard contributions onto remoteDict
+	shardFile := fmt.Sprintf("dict_%s.json", machineID)
+	shardRelPath := filepath.Join("pipeline", "config", "shards", shardFile)
+	shardAbsPath := filepath.Join(gsm.ProjectRoot, shardRelPath)
+
+	mergedDict := remoteDict
+	if mergedDict.AsrCorrections == nil {
+		mergedDict.AsrCorrections = make(map[string]string)
+	}
+	if mergedDict.DomainTerms == nil {
+		mergedDict.DomainTerms = make(map[string]string)
+	}
+
+	hasLocalShard := false
+	if shardBytes, err := os.ReadFile(shardAbsPath); err == nil {
+		var localShard compiledDictShard
+		if json.Unmarshal(shardBytes, &localShard) == nil {
+			hasLocalShard = true
+			for k, v := range localShard.AsrCorrections {
+				mergedDict.AsrCorrections[k] = v
+			}
+			for k, v := range localShard.DomainTerms {
+				mergedDict.DomainTerms[k] = v
+			}
+			if len(localShard.AsrStemPatterns) > 0 {
+				mergedDict.AsrStemPatterns = append(mergedDict.AsrStemPatterns, localShard.AsrStemPatterns...)
+			}
+			if len(localShard.SpokenEnglishSmoothing) > 0 {
+				mergedDict.SpokenEnglishSmoothing = append(mergedDict.SpokenEnglishSmoothing, localShard.SpokenEnglishSmoothing...)
+			}
+			if len(localShard.SpokenHindiSmoothing) > 0 {
+				mergedDict.SpokenHindiSmoothing = append(mergedDict.SpokenHindiSmoothing, localShard.SpokenHindiSmoothing...)
+			}
+			if len(localShard.SpokenMarathiSmoothing) > 0 {
+				mergedDict.SpokenMarathiSmoothing = append(mergedDict.SpokenMarathiSmoothing, localShard.SpokenMarathiSmoothing...)
+			}
+		}
+	}
+
+	// Deduplicate merged dictionary
+	mergedDict.AsrCorrections = deduplicateMap(mergedDict.AsrCorrections)
+	mergedDict.DomainTerms = deduplicateMap(mergedDict.DomainTerms)
+	mergedDict.AsrStemPatterns = deduplicatePatterns(mergedDict.AsrStemPatterns)
+	mergedDict.SpokenEnglishSmoothing = deduplicatePatterns(mergedDict.SpokenEnglishSmoothing)
+	mergedDict.SpokenHindiSmoothing = deduplicatePatterns(mergedDict.SpokenHindiSmoothing)
+	mergedDict.SpokenMarathiSmoothing = deduplicatePatterns(mergedDict.SpokenMarathiSmoothing)
+
+	// Compute what local shard contributed that was NOT already in remoteDict
+	pushedDiff := computeDictDiff(remoteDict, mergedDict)
+
+	// 5. Write final dictionary to disk
+	updatedDictBytes, _ := json.MarshalIndent(mergedDict, "", "  ")
+	if err := os.WriteFile(dictAbsPath, updatedDictBytes, 0644); err != nil {
+		msg := fmt.Sprintf("Failed to update domain_dictionary.json: %v", err)
+		if logToUI != nil {
+			logToUI("🔴 [SyncManager] " + msg)
+		}
 		gsm.mu.Lock()
 		gsm.Status = SyncError
-		gsm.LastError = fmt.Sprintf("Compile Failed: %v", err)
+		gsm.LastError = msg
 		gsm.mu.Unlock()
-		return "Compile Failed", err
+		return msg, err
+	}
+
+	// 6. If local shard had new contributions to push, commit and push them!
+	if pushedDiff.TotalChanges() > 0 {
+		gsm.clearGitLock()
+
+		cmdAdd := exec.Command("git", "-C", gsm.ProjectRoot, "add", dictRelPath)
+		cmdAdd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+		cmdAdd.CombinedOutput()
+
+		commitMsg := fmt.Sprintf("Global Sync: %s (%s)", pushedDiff.Summary(), machineID)
+		cmdCommit := exec.Command("git", "-C", gsm.ProjectRoot, "commit", "-m", commitMsg, "--", dictRelPath)
+		cmdCommit.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+		cmdCommit.CombinedOutput()
+
+		cmdPush := exec.Command("git", "-C", gsm.ProjectRoot, "push", "origin", "main")
+		cmdPush.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+		cmdPush.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+		pushOut, err := cmdPush.CombinedOutput()
+
+		if err != nil {
+			isAuth, authErrMsg := parseGitError(string(pushOut), err)
+			if isAuth {
+				gsm.mu.Lock()
+				gsm.Status = SyncAuthError
+				gsm.LastError = authErrMsg
+				gsm.mu.Unlock()
+				if logToUI != nil {
+					logToUI(fmt.Sprintf("🔴 [SyncManager] %s: %s", gsm.Status, string(pushOut)))
+				}
+				return authErrMsg, fmt.Errorf("%s", authErrMsg)
+			}
+
+			// Rebase retry
+			gsm.clearGitLock()
+			cmdRebase := exec.Command("git", "-C", gsm.ProjectRoot, "pull", "--autostash", "--rebase", "origin", "main")
+			cmdRebase.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+			cmdRebase.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+			cmdRebase.CombinedOutput()
+
+			cmdPushRetry := exec.Command("git", "-C", gsm.ProjectRoot, "push", "origin", "main")
+			cmdPushRetry.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+			cmdPushRetry.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+			pushRetryOut, retryErr := cmdPushRetry.CombinedOutput()
+
+			if retryErr != nil {
+				isAuthRetry, retryErrMsg := parseGitError(string(pushRetryOut), retryErr)
+				gsm.mu.Lock()
+				if isAuthRetry {
+					gsm.Status = SyncAuthError
+					gsm.LastError = retryErrMsg
+				} else {
+					gsm.Status = SyncError
+					gsm.LastError = retryErrMsg
+				}
+				gsm.mu.Unlock()
+				if logToUI != nil {
+					logToUI(fmt.Sprintf("🔴 [SyncManager] Git Push Error: %s", string(pushRetryOut)+string(pushOut)))
+				}
+				return gsm.LastError, retryErr
+			}
+		}
+
+		if logToUI != nil {
+			logToUI(fmt.Sprintf("📤 [SyncManager] Pushed local contributions to GitHub Global Domain Dictionary (%s):", pushedDiff.Summary()))
+			for _, line := range pushedDiff.DetailedLogLines() {
+				logToUI("   " + line)
+			}
+		}
+	} else if hasLocalShard {
+		if logToUI != nil {
+			logToUI("ℹ️ [SyncManager] All local shard terms already exist in Global Domain Dictionary (0 terms pushed).")
+		}
 	}
 
 	gsm.mu.Lock()
 	gsm.Status = SyncOnline
 	gsm.LastError = ""
 	gsm.mu.Unlock()
-	if logToUI != nil {
-		logToUI("🌐 [SyncManager] Successfully pulled remote domain dictionary from GitHub (local shard kept private).")
+
+	// Build human-readable changelog response
+	var responseParts []string
+	if pulledDiff.TotalChanges() > 0 && pushedDiff.TotalChanges() > 0 {
+		responseParts = append(responseParts, fmt.Sprintf("Global Synced: Pulled %s | Pushed %s", pulledDiff.Summary(), pushedDiff.Summary()))
+		responseParts = append(responseParts, "\n📥 Pulled from Remote:")
+		responseParts = append(responseParts, pulledDiff.DetailedLogLines()...)
+		responseParts = append(responseParts, "\n📤 Pushed to Global Dictionary:")
+		responseParts = append(responseParts, pushedDiff.DetailedLogLines()...)
+	} else if pushedDiff.TotalChanges() > 0 {
+		responseParts = append(responseParts, fmt.Sprintf("Pushed to Global Dictionary: %s", pushedDiff.Summary()))
+		responseParts = append(responseParts, pushedDiff.DetailedLogLines()...)
+	} else if pulledDiff.TotalChanges() > 0 {
+		responseParts = append(responseParts, fmt.Sprintf("Pulled from GitHub: %s", pulledDiff.Summary()))
+		responseParts = append(responseParts, pulledDiff.DetailedLogLines()...)
+	} else {
+		responseParts = append(responseParts, "Global Domain Dictionary is up-to-date with GitHub (0 changes).")
 	}
-	return "Global Dictionary Synced", nil
+
+	return strings.Join(responseParts, "\n"), nil
 }
 
 // UpdateDomainDictionary pulls global dictionary changes and compiles all local shards into domain_dictionary.json.
 // No other files in the repository are ever affected or modified.
 func (gsm *GitSyncManager) UpdateDomainDictionary(logToUI func(string)) (string, error) {
+	dictRelPath := filepath.Join("pipeline", "config", "domain_dictionary.json")
+	dictAbsPath := filepath.Join(gsm.ProjectRoot, dictRelPath)
+
+	var preDict compiledDictShard
+	if dictBytes, err := os.ReadFile(dictAbsPath); err == nil {
+		json.Unmarshal(dictBytes, &preDict)
+	}
+
 	if gsm.isOnline() {
 		machineID := gsm.getMachineID()
 		if err := gsm.fetchRemoteConfigSync(machineID, logToUI); err != nil {
@@ -610,15 +957,29 @@ func (gsm *GitSyncManager) UpdateDomainDictionary(logToUI func(string)) (string,
 		return "Compile Failed", err
 	}
 
+	var postDict compiledDictShard
+	if dictBytes, err := os.ReadFile(dictAbsPath); err == nil {
+		json.Unmarshal(dictBytes, &postDict)
+	}
+
+	diff := computeDictDiff(preDict, postDict)
+
 	gsm.mu.Lock()
 	gsm.Status = SyncOnline
 	gsm.LastError = ""
 	gsm.mu.Unlock()
 
 	if logToUI != nil {
-		logToUI("📖 [SyncManager] Global Domain Dictionary updated and consolidated with local shard.")
+		if diff.TotalChanges() > 0 {
+			logToUI(fmt.Sprintf("📖 [SyncManager] Global Domain Dictionary updated and consolidated (%s):", diff.Summary()))
+			for _, line := range diff.DetailedLogLines() {
+				logToUI("   " + line)
+			}
+		} else {
+			logToUI("📖 [SyncManager] Global Domain Dictionary compiled: all local and global entries are up-to-date.")
+		}
 	}
-	return "Domain Dictionary Updated", nil
+	return fmt.Sprintf("Domain Dictionary Updated: %s", diff.Summary()), nil
 }
 
 // AttemptSync maintains backward compatibility with legacy single-button sync calls

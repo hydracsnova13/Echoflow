@@ -9,6 +9,8 @@ export function ApproveCandidateTerms(arg1:string):Promise<string>;
 
 export function ApproveNMTTranscript(arg1:string,arg2:string):Promise<string>;
 
+export function DeleteLogsByFilter(arg1:number,arg2:string,arg3:boolean):Promise<broker.DeleteResult>;
+
 export function GetAllPendingCandidateTerms():Promise<string>;
 
 export function GetAuditData(arg1:string,arg2:string):Promise<string>;
@@ -17,7 +19,11 @@ export function GetGlobalDictionary():Promise<string>;
 
 export function GetJobCandidateTerms(arg1:string):Promise<string>;
 
+export function GetJobManifest(arg1:string):Promise<string>;
+
 export function GetJobOutputPath(arg1:string):Promise<Record<string, string>>;
+
+export function GetLogStorageStats():Promise<broker.LogStorageStats>;
 
 export function GetMachineID():Promise<string>;
 
@@ -27,9 +33,13 @@ export function GetPipelineManifest():Promise<Record<string, broker.PipelineComp
 
 export function GetRecentCheckpoints():Promise<Array<main.JobSummary>>;
 
+export function GetRecentTelemetryLogs(arg1:number):Promise<Array<string>>;
+
 export function GetSetupStatus():Promise<string>;
 
 export function GetSyncStatus():Promise<string>;
+
+export function OpenJobFolder(arg1:string):Promise<void>;
 
 export function ResumeJob(arg1:string):Promise<void>;
 

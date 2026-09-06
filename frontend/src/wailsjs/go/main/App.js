@@ -14,6 +14,10 @@ export function ApproveNMTTranscript(arg1, arg2) {
   return window['go']['main']['App']['ApproveNMTTranscript'](arg1, arg2);
 }
 
+export function DeleteLogsByFilter(arg1, arg2, arg3) {
+  return window['go']['main']['App']['DeleteLogsByFilter'](arg1, arg2, arg3);
+}
+
 export function GetAllPendingCandidateTerms() {
   return window['go']['main']['App']['GetAllPendingCandidateTerms']();
 }
@@ -30,8 +34,16 @@ export function GetJobCandidateTerms(arg1) {
   return window['go']['main']['App']['GetJobCandidateTerms'](arg1);
 }
 
+export function GetJobManifest(arg1) {
+  return window['go']['main']['App']['GetJobManifest'](arg1);
+}
+
 export function GetJobOutputPath(arg1) {
   return window['go']['main']['App']['GetJobOutputPath'](arg1);
+}
+
+export function GetLogStorageStats() {
+  return window['go']['main']['App']['GetLogStorageStats']();
 }
 
 export function GetMachineID() {
@@ -50,12 +62,20 @@ export function GetRecentCheckpoints() {
   return window['go']['main']['App']['GetRecentCheckpoints']();
 }
 
+export function GetRecentTelemetryLogs(arg1) {
+  return window['go']['main']['App']['GetRecentTelemetryLogs'](arg1);
+}
+
 export function GetSetupStatus() {
   return window['go']['main']['App']['GetSetupStatus']();
 }
 
 export function GetSyncStatus() {
   return window['go']['main']['App']['GetSyncStatus']();
+}
+
+export function OpenJobFolder(arg1) {
+  return window['go']['main']['App']['OpenJobFolder'](arg1);
 }
 
 export function ResumeJob(arg1) {

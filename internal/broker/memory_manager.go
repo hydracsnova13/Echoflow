@@ -97,6 +97,7 @@ type MemoryManager struct {
 	ProjectRoot    string
 	Checkpoints    *CheckpointManager
 	SyncManager    *GitSyncManager
+	TelemetryLogger *TelemetryLogger
 	RecentAlerts   []string
 	CompletedTasks int32
 	ctx            context.Context
@@ -104,15 +105,16 @@ type MemoryManager struct {
 
 func NewMemoryManager(maxRamMB float64, projectRoot string, cm *CheckpointManager, sm *GitSyncManager) *MemoryManager {
 	mgr := &MemoryManager{
-		PendingBuckets: make(map[string][]BucketTask),
-		ModelRegistry:  make(map[string]ModelConfig),
-		PipelineDAG:    make(map[string]PipelineComponent),
-		MaxRAMMB:       maxRamMB,
-		ProjectRoot:    projectRoot,
-		Checkpoints:    cm,
-		SyncManager:    sm,
-		BootingWorkers: make(map[string]int),
-		RecentAlerts:   make([]string, 0),
+		PendingBuckets:  make(map[string][]BucketTask),
+		ModelRegistry:   make(map[string]ModelConfig),
+		PipelineDAG:     make(map[string]PipelineComponent),
+		MaxRAMMB:        maxRamMB,
+		ProjectRoot:     projectRoot,
+		Checkpoints:     cm,
+		SyncManager:     sm,
+		TelemetryLogger: NewTelemetryLogger(projectRoot),
+		BootingWorkers:  make(map[string]int),
+		RecentAlerts:    make([]string, 0),
 	}
 	mgr.loadConfigs()
 	go mgr.startAutoScalerLoop()
@@ -241,12 +243,63 @@ func (m *MemoryManager) TrackCPUEnd(comp string, pid int, estRAM float64) {
 	m.ActiveWorkers = retained
 }
 
+func extractJobIDFromMsg(msg string) string {
+	idx := strings.Index(msg, "JOB-")
+	if idx == -1 {
+		return ""
+	}
+	sub := msg[idx:]
+	end := len(sub)
+	for i, r := range sub {
+		if i > 4 && (r == ' ' || r == ':' || r == '.' || r == '/' || r == '\\' || r == '\n' || r == '\t' || r == ')' || r == '!' || r == ']') {
+			end = i
+			break
+		}
+	}
+	return sub[:end]
+}
+
 func (m *MemoryManager) LogToUI(msg string) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.RecentAlerts = append([]string{time.Now().Format("15:04:05") + " " + msg}, m.RecentAlerts...)
 	if len(m.RecentAlerts) > 25 {
 		m.RecentAlerts = m.RecentAlerts[:25]
+	}
+	m.mu.Unlock()
+
+	if m.TelemetryLogger != nil {
+		jobID := extractJobIDFromMsg(msg)
+		level := "INFO"
+		if strings.Contains(msg, "❌") || strings.Contains(msg, "Error") || strings.Contains(msg, "failed") || strings.Contains(msg, "crashed") {
+			level = "ERROR"
+		} else if strings.Contains(msg, "⚠️") || strings.Contains(msg, "🟡") || strings.Contains(msg, "Warn") {
+			level = "WARN"
+		}
+
+		scope := "SYSTEM"
+		if strings.Contains(msg, "[DAG") {
+			scope = "DAG"
+		} else if strings.Contains(msg, "[Sync") {
+			scope = "SYNC"
+		} else if strings.Contains(msg, "[Auto-Recovery]") || strings.Contains(msg, "[Recovery]") {
+			scope = "RECOVERY"
+		} else if strings.Contains(msg, "Boot") {
+			scope = "DAEMON"
+		}
+
+		m.TelemetryLogger.Log(level, scope, jobID, msg)
+	}
+}
+
+func (m *MemoryManager) LogJob(jobID, level, scope, msg string) {
+	if m.TelemetryLogger != nil {
+		m.TelemetryLogger.LogJob(jobID, level, scope, msg)
+	}
+}
+
+func (m *MemoryManager) LogGlobal(level, scope, msg string) {
+	if m.TelemetryLogger != nil {
+		m.TelemetryLogger.LogGlobal(level, scope, msg)
 	}
 }
 

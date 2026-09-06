@@ -397,7 +397,7 @@ func (d *DAGExecutor) isJobComplete(job *broker.JobManifest, mediaType string, o
 
 func (d *DAGExecutor) ExecuteCPUCommand(jobID string, compName string, meta broker.PipelineComponent, inputFile string) {
 	job := d.CheckpointManager.GetJob(jobID)
-	startMsg := fmt.Sprintf("⚙️ [DAG Engine] Starting CPU Task: %s", compName)
+	startMsg := fmt.Sprintf("⚙️ [DAG Engine] [%s] Starting CPU Task: %s", jobID, compName)
 	d.MemoryManager.LogToUI(startMsg)
 
 	jobDir := filepath.Join(d.ProjectRoot, "workspace", "jobs", jobID)
@@ -422,14 +422,14 @@ func (d *DAGExecutor) ExecuteCPUCommand(jobID string, compName string, meta brok
 		scanner := bufio.NewScanner(pr)
 		scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 		for scanner.Scan() {
-			d.MemoryManager.LogToUI(scanner.Text())
+			d.MemoryManager.LogToUI(fmt.Sprintf("[%s] %s", jobID, scanner.Text()))
 		}
 	}()
 
 	if err := cmd.Start(); err != nil {
 		_ = pw.Close()
 		<-logDone
-		d.MemoryManager.LogToUI(fmt.Sprintf("❌ %s failed to start! Error: %v", compName, err))
+		d.MemoryManager.LogToUI(fmt.Sprintf("❌ [%s] %s failed to start! Error: %v", jobID, compName, err))
 		job.UpdateGlobalTask(compName, broker.StateError)
 		return
 	}
@@ -445,11 +445,11 @@ func (d *DAGExecutor) ExecuteCPUCommand(jobID string, compName string, meta brok
 	pythonLogs := strings.TrimSpace(outBuf.String())
 
 	if err != nil {
-		d.MemoryManager.LogToUI(fmt.Sprintf("❌ %s crashed! Error: %v | Logs: %s", compName, err, pythonLogs))
+		d.MemoryManager.LogToUI(fmt.Sprintf("❌ [%s] %s crashed! Error: %v | Logs: %s", jobID, compName, err, pythonLogs))
 		job.UpdateGlobalTask(compName, broker.StateError)
 		return
 	}
 
 	job.UpdateGlobalTask(compName, broker.StateDone)
-	d.MemoryManager.LogToUI(fmt.Sprintf("✅ %s finished. Output: %s", compName, pythonLogs))
+	d.MemoryManager.LogToUI(fmt.Sprintf("✅ [%s] %s finished. Output: %s", jobID, compName, pythonLogs))
 }

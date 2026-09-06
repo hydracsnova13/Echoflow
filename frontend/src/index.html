@@ -560,26 +560,117 @@
         .job-card {
             background: var(--bg-base);
             border: 1px solid var(--border-dim);
-            border-radius: 6px;
-            padding: 10px;
-            margin-bottom: 8px;
+            border-radius: 8px;
+            padding: 10px 12px;
+            margin-bottom: 10px;
             cursor: pointer;
-            transition: border-color 0.2s ease, transform 0.2s ease;
+            transition: all 0.2s ease;
+            position: relative;
         }
 
         .job-card:hover {
             border-color: var(--accent);
             transform: translateY(-2px);
-            box-shadow: 0 4px 10px rgba(59, 130, 246, 0.1);
+            box-shadow: 0 4px 14px rgba(59, 130, 246, 0.15);
+        }
+
+        .job-card.active {
+            border-color: var(--accent);
+            background: rgba(59, 130, 246, 0.08);
+            box-shadow: 0 0 14px rgba(59, 130, 246, 0.25);
+        }
+
+        .job-card-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--text-dim);
+            display: inline-block;
+            flex-shrink: 0;
+        }
+
+        .job-card-dot.running {
+            background: var(--accent);
+            box-shadow: 0 0 6px var(--accent);
+        }
+
+        .job-card-dot.done,
+        .job-card-dot.completed {
+            background: var(--success);
+            box-shadow: 0 0 6px var(--success);
+        }
+
+        .job-card-dot.stopped,
+        .job-card-dot.paused,
+        .job-card-dot.error {
+            background: var(--warning);
+            box-shadow: 0 0 6px var(--warning);
         }
 
         .job-card-header {
             display: flex;
             justify-content: space-between;
-            font-size: 0.7rem;
+            align-items: center;
+            font-size: 0.72rem;
             font-family: monospace;
-            margin-bottom: 6px;
-            font-weight: bold;
+            margin-bottom: 4px;
+        }
+
+        .job-card-title {
+            font-size: 0.75rem;
+            color: var(--text-main);
+            margin: 4px 0 6px 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            font-weight: 500;
+        }
+
+        .job-card-meta {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.68rem;
+            color: var(--text-dim);
+            font-family: monospace;
+            margin-bottom: 3px;
+        }
+
+        .job-card-actions {
+            display: flex;
+            gap: 6px;
+            margin-top: 8px;
+            flex-wrap: wrap;
+        }
+
+        .job-mini-btn {
+            background: var(--bg-card);
+            border: 1px solid var(--border-dim);
+            color: var(--text-main);
+            border-radius: 4px;
+            padding: 3px 8px;
+            font-size: 0.68rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
+        }
+
+        .job-mini-btn:hover {
+            border-color: var(--accent);
+            color: var(--accent);
+            background: rgba(59, 130, 246, 0.12);
+        }
+
+        .job-mini-btn.job-mini-accent {
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+
+        .job-mini-btn.job-mini-warn {
+            border-color: var(--warning);
+            color: var(--warning);
         }
 
         .job-status-badge {
@@ -1143,6 +1234,10 @@
             <button onclick="openDictModal()" class="dict-btn dict-btn-primary"
                 style="margin-left: 15px; display: inline-flex; align-items: center; gap: 6px;">📖 Domain
                 Dictionary</button>
+            <button onclick="openTelemetryModal()" class="dict-btn dict-btn-secondary" id="navTelemetryBtn"
+                style="margin-left: 8px; display: inline-flex; align-items: center; gap: 6px;" title="Telemetry Storage & Log Retention">
+                📊 Logs (<span id="navLogSize">0 B</span> / 1 GB)
+            </button>
         </div>
     </div>
 
@@ -1295,11 +1390,13 @@
                 </div>
             </div>
             <div class="op-kpi-card" style="flex: 1; padding: 20px; text-align: left;">
-                <div class="op-kpi-label" style="margin-bottom: 12px;">Recent Checkpoints</div>
+                <div class="op-kpi-label" style="margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center;">
+                    <span>Recent Checkpoints</span>
+                    <button class="dict-btn dict-btn-secondary" style="font-size: 0.68rem; padding: 2px 8px;" onclick="fetchRecentCheckpoints(true)">🔄 Refresh</button>
+                </div>
                 <div id="recentJobsPanelOp"
-                    style="display: flex; flex-direction: column; gap: 8px; max-height: 120px; overflow-y: auto;">
-                    <div style="text-align: center; color: var(--border-glow); font-size: 0.75rem; margin-top: 10px;">No
-                        checkpoints detected.</div>
+                    style="display: flex; flex-direction: column; gap: 8px; max-height: 240px; overflow-y: auto;">
+                    <div style="text-align: center; color: var(--border-glow); font-size: 0.75rem; margin-top: 10px;">Scanning checkpoints...</div>
                 </div>
             </div>
         </div>
@@ -1471,14 +1568,21 @@
                 </div>
             </div>
             <div class="card">
-                <div class="card-header">System Interceptor Logs</div>
+                <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
+                    <span>System Interceptor Logs</span>
+                    <button onclick="openTelemetryModal()" class="dict-btn dict-btn-secondary" style="font-size: 0.72rem; padding: 2px 8px;" title="Manage Storage & Retention">
+                        ⚙️ Manage Logs (<span id="interceptorLogSizeBadge">0 B</span> / 1 GB)
+                    </button>
+                </div>
                 <div class="card-body logs" id="logBox"></div>
             </div>
             <div class="card">
-                <div class="card-header">Recent Checkpoints</div>
-                <div class="card-body" id="recentJobsPanel">
-                    <div style="text-align: center; color: var(--border-glow); margin-top: 40px; font-size: 0.75rem;">No
-                        checkpoints detected.</div>
+                <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
+                    <span>Recent Checkpoints</span>
+                    <button class="dict-btn dict-btn-secondary" style="font-size: 0.68rem; padding: 2px 8px;" onclick="fetchRecentCheckpoints(true)">🔄 Refresh</button>
+                </div>
+                <div class="card-body" id="recentJobsPanel" style="max-height: 400px; overflow-y: auto; padding: 10px;">
+                    <div style="text-align: center; color: var(--border-glow); margin-top: 40px; font-size: 0.75rem;">Scanning checkpoints...</div>
                 </div>
             </div>
         </div>
@@ -1531,6 +1635,15 @@
                         </tbody>
                     </table>
                 </div>
+            </div>
+
+            <!-- 📋 IN-MODAL SYNC ACTIVITY & CHANGELOG BOX -->
+            <div id="dictSyncLogBox" style="display: none; margin: 0 20px 10px 20px; padding: 10px 14px; background: #090d16; border: 1px solid var(--border-glow); border-radius: 8px; font-size: 0.78rem; max-height: 130px; overflow-y: auto; font-family: 'Consolas', 'Courier New', monospace;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 4px;">
+                    <span id="dictSyncLogTitle" style="font-weight: 700; color: var(--accent);">📋 Sync Activity Log</span>
+                    <button onclick="document.getElementById('dictSyncLogBox').style.display='none'" style="background: none; border: none; color: #94a3b8; cursor: pointer; font-size: 0.85rem;" title="Close Log">✕</button>
+                </div>
+                <div id="dictSyncLogContent" style="color: #cbd5e1; line-height: 1.5; white-space: pre-wrap; word-break: break-word;"></div>
             </div>
 
             <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
@@ -1631,6 +1744,174 @@
                     <button class="dict-btn dict-btn-success" id="btnApproveAudit" onclick="approveAudit()"
                         style="font-size: 0.9rem; padding: 10px 24px;">✅ Approve & Resume Pipeline</button>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 📊 TELEMETRY & STORAGE MANAGEMENT (LOCAL STACKDRIVER) MODAL -->
+    <div id="telemetryModal" class="modal-overlay">
+        <div class="modal-card" style="max-width: 900px; max-height: 90vh;">
+            <div class="modal-header">
+                <div>
+                    <div class="modal-title" style="color: var(--accent); display: flex; align-items: center; gap: 8px;">
+                        <span>📊 Telemetry & Storage Governor</span>
+                        <span style="font-size: 0.72rem; padding: 2px 8px; border-radius: 10px; background: rgba(59, 130, 246, 0.2); border: 1px solid var(--accent); color: #93c5fd;">Local Stackdriver</span>
+                    </div>
+                    <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 2px;">
+                        Centralized system logging, per-job trace isolation, and time-based retention governor.
+                    </div>
+                </div>
+                <button class="modal-close" onclick="closeTelemetryModal()">&times;</button>
+            </div>
+
+            <div class="modal-body" style="padding: 16px 24px; overflow-y: auto;">
+                <!-- 1. STORAGE GAUGE & 1GB THRESHOLD -->
+                <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-dim); border-radius: 10px; padding: 16px; margin-bottom: 16px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                        <span style="font-size: 0.85rem; font-weight: 600; color: #f8fafc;">Storage Used</span>
+                        <span id="telemetryStorageLabel" style="font-size: 0.85rem; font-weight: 700; color: #38bdf8;">0 B / 1.00 GB (0.0%)</span>
+                    </div>
+                    
+                    <div style="background: rgba(255, 255, 255, 0.08); border-radius: 8px; height: 12px; overflow: hidden; position: relative;">
+                        <div id="telemetryStorageBar" style="height: 100%; width: 0%; background: linear-gradient(90deg, #3b82f6, #10b981); transition: width 0.4s ease, background 0.4s ease;"></div>
+                    </div>
+
+                    <div id="telemetryThresholdAlert" style="display: none; margin-top: 10px; padding: 8px 12px; background: rgba(239, 68, 68, 0.15); border: 1px solid #ef4444; border-radius: 6px; color: #fca5a5; font-size: 0.8rem;">
+                        ⚠️ <strong>Warning:</strong> Log storage is approaching the 1.00 GB threshold. Please use the time retention filter below to delete older logs or clear historical data.
+                    </div>
+
+                    <div style="display: flex; gap: 15px; flex-wrap: wrap; margin-top: 14px; font-size: 0.75rem; color: var(--text-muted);">
+                        <div>🌐 Central Logs: <strong id="telemetryGlobalCount" style="color: #f8fafc;">0</strong> files</div>
+                        <div>📁 Job Traces: <strong id="telemetryJobCount" style="color: #f8fafc;">0</strong> files</div>
+                        <div>📅 Oldest Log: <strong id="telemetryOldestDate" style="color: #f8fafc;">N/A</strong></div>
+                        <div>📅 Newest Log: <strong id="telemetryNewestDate" style="color: #f8fafc;">N/A</strong></div>
+                    </div>
+                </div>
+
+                <!-- 2. TIME-BASED RETENTION & PURGE FORM -->
+                <div style="background: rgba(30, 41, 59, 0.4); border: 1px solid var(--border-dim); border-radius: 10px; padding: 16px; margin-bottom: 16px;">
+                    <div style="font-size: 0.88rem; font-weight: 600; color: #f8fafc; margin-bottom: 4px;">
+                        🗑️ Time-Based Log Retention & Cleanup
+                    </div>
+                    <div style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 12px;">
+                        Purge logs created on or before a selectable time period (N days, months, or years) to maintain disk footprint. If the filter is empty, all logs will be cleared.
+                    </div>
+
+                    <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px;">
+                        <span style="font-size: 0.8rem; color: #cbd5e1;">Delete logs older than:</span>
+                        <input type="number" id="telemetryPeriodValue" min="1" max="999" value="30"
+                            style="width: 70px; padding: 6px 10px; background: #0f172a; border: 1px solid var(--border-dim); border-radius: 6px; color: #fff; font-size: 0.82rem;">
+                        <select id="telemetryPeriodUnit"
+                            style="padding: 6px 10px; background: #0f172a; border: 1px solid var(--border-dim); border-radius: 6px; color: #fff; font-size: 0.82rem;">
+                            <option value="days" selected>Days</option>
+                            <option value="months">Months</option>
+                            <option value="years">Years</option>
+                        </select>
+                        <div style="display: flex; gap: 6px; align-items: center;">
+                            <span style="font-size: 0.75rem; color: var(--text-muted);">Quick presets:</span>
+                            <button type="button" class="dict-btn dict-btn-secondary" style="font-size: 0.72rem; padding: 3px 8px;" onclick="selectPeriodPreset(7, 'days')">7d</button>
+                            <button type="button" class="dict-btn dict-btn-secondary" style="font-size: 0.72rem; padding: 3px 8px;" onclick="selectPeriodPreset(30, 'days')">30d</button>
+                            <button type="button" class="dict-btn dict-btn-secondary" style="font-size: 0.72rem; padding: 3px 8px;" onclick="selectPeriodPreset(90, 'days')">90d</button>
+                            <button type="button" class="dict-btn dict-btn-secondary" style="font-size: 0.72rem; padding: 3px 8px;" onclick="selectPeriodPreset(6, 'months')">6m</button>
+                            <button type="button" class="dict-btn dict-btn-secondary" style="font-size: 0.72rem; padding: 3px 8px;" onclick="selectPeriodPreset(1, 'years')">1y</button>
+                        </div>
+                    </div>
+
+                    <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                        <button class="dict-btn dict-btn-warning" onclick="deleteLogsByFilter()" style="font-size: 0.82rem; padding: 6px 14px;">
+                            🗑️ Delete Older Logs
+                        </button>
+                        <button class="dict-btn dict-btn-danger" onclick="confirmClearAllLogs()" style="font-size: 0.82rem; padding: 6px 14px;">
+                            🧹 Clear All Logs (Reset)
+                        </button>
+                        <button class="dict-btn dict-btn-secondary" onclick="refreshTelemetryStats()" style="font-size: 0.82rem; padding: 6px 14px;">
+                            🔄 Refresh Storage Stats
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 3. LIVE CENTRAL STACKDRIVER VIEWER -->
+                <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-dim); border-radius: 10px; padding: 14px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; flex-wrap: wrap; gap: 8px;">
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <span style="font-size: 0.85rem; font-weight: 600; color: #f8fafc;">📋 Central Stackdriver Explorer</span>
+                            <span style="font-size: 0.72rem; color: var(--text-muted);">(workspace/logs/ &amp; workspace/jobs/)</span>
+                        </div>
+                        <div style="display: flex; gap: 8px; align-items: center;">
+                            <input type="text" id="telemetryFilterInput" placeholder="🔍 Search logs..." oninput="renderTelemetryViewer()"
+                                style="padding: 4px 8px; background: #0f172a; border: 1px solid var(--border-dim); border-radius: 4px; color: #fff; font-size: 0.75rem; width: 160px;">
+                            <select id="telemetryLevelFilter" onchange="renderTelemetryViewer()"
+                                style="padding: 4px 8px; background: #0f172a; border: 1px solid var(--border-dim); border-radius: 4px; color: #fff; font-size: 0.75rem;">
+                                <option value="ALL">All Levels</option>
+                                <option value="INFO">INFO</option>
+                                <option value="WARN">WARN</option>
+                                <option value="ERROR">ERROR</option>
+                            </select>
+                            <button type="button" class="dict-btn dict-btn-secondary" onclick="fetchRecentLogs()" style="font-size: 0.72rem; padding: 4px 8px;">🔄 Tail</button>
+                        </div>
+                    </div>
+
+                    <div id="telemetryLogViewer" style="background: #090d16; border: 1px solid #1e293b; border-radius: 6px; padding: 10px 14px; font-family: 'Consolas', 'Courier New', monospace; font-size: 0.75rem; color: #94a3b8; height: 180px; overflow-y: auto; white-space: pre-wrap; line-height: 1.45;"></div>
+                </div>
+            </div>
+
+            <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center;">
+                <div style="font-size: 0.75rem; color: var(--text-muted);">
+                    All log activities are locally persisted in gitignored workspace storage.
+                </div>
+                <button class="dict-btn dict-btn-secondary" onclick="closeTelemetryModal()">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 🔍 CHECKPOINT INSPECTOR MODAL -->
+    <div id="checkpointModal" class="modal-overlay">
+        <div class="modal-card" style="max-width: 780px; max-height: 85vh; display: flex; flex-direction: column;">
+            <div class="modal-header">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <div class="modal-title">🔍 Checkpoint Inspector</div>
+                    <span id="chkModalJobId" style="font-family: monospace; font-weight: 700; color: var(--accent); font-size: 0.95rem;"></span>
+                    <span id="chkModalStatus" class="job-status-badge"></span>
+                </div>
+                <button class="modal-close" onclick="closeCheckpointModal()">&times;</button>
+            </div>
+
+            <div class="modal-body" style="padding: 15px 20px; overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 16px;">
+                <!-- Source Info Banner -->
+                <div style="background: var(--bg-base); padding: 12px 14px; border-radius: 8px; border: 1px solid var(--border-dim); display: flex; flex-direction: column; gap: 4px;">
+                    <div style="font-size: 0.72rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px;">Source File / Media</div>
+                    <div id="chkModalSource" style="font-weight: 600; font-size: 0.85rem; color: var(--text-main); word-break: break-all;"></div>
+                </div>
+
+                <!-- Global Tasks Section -->
+                <div>
+                    <div style="font-size: 0.78rem; font-weight: 700; color: var(--text-main); margin-bottom: 8px; display: flex; align-items: center; gap: 6px;">
+                        <span>⚙️ Pipeline Components & Global Tasks</span>
+                    </div>
+                    <div id="chkModalTasks" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px;">
+                    </div>
+                </div>
+
+                <!-- Chunks Breakdown Section -->
+                <div>
+                    <div style="font-size: 0.78rem; font-weight: 700; color: var(--text-main); margin-bottom: 8px;">
+                        <span>🧩 Audio Chunks & Parallel Transcriptions</span>
+                    </div>
+                    <div id="chkModalChunks" style="max-height: 160px; overflow-y: auto; background: var(--bg-base); border: 1px solid var(--border-dim); border-radius: 6px; padding: 6px 10px;">
+                    </div>
+                </div>
+            </div>
+
+            <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center; padding: 12px 20px; border-top: 1px solid var(--border-dim);">
+                <div style="display: flex; gap: 8px;">
+                    <button class="dict-btn dict-btn-primary" id="btnChkModalLoad" style="font-size: 0.75rem; padding: 4px 12px;">
+                        ▶️ Load as Active Job
+                    </button>
+                    <button class="dict-btn dict-btn-secondary" id="btnChkModalFolder" style="font-size: 0.75rem; padding: 4px 12px;">
+                        📂 Open Folder in Explorer
+                    </button>
+                </div>
+                <button class="dict-btn dict-btn-secondary" onclick="closeCheckpointModal()" style="font-size: 0.75rem; padding: 4px 12px;">Close</button>
             </div>
         </div>
     </div>
@@ -2058,6 +2339,9 @@
             if (document.getElementById('targetPath')) document.getElementById('targetPath').value = id;
             if (document.getElementById('targetPathOp')) document.getElementById('targetPathOp').value = id;
             handleJobStatusUpdate(id, status);
+            if (typeof fetchRecentCheckpoints === "function") {
+                fetchRecentCheckpoints(true);
+            }
         }
 
         async function buildDAG() {
@@ -2115,7 +2399,12 @@
             } catch (e) { }
         }
 
-        document.addEventListener('DOMContentLoaded', buildDAG);
+        document.addEventListener('DOMContentLoaded', () => {
+            buildDAG();
+            if (typeof fetchRecentCheckpoints === 'function') {
+                fetchRecentCheckpoints(true);
+            }
+        });
 
         let activeAuditJobId = null;
 
@@ -2269,6 +2558,210 @@
             };
         }
 
+        let lastRenderedJobsJson = "";
+        let lastSelectedJobId = "";
+        let isFetchingCheckpoints = false;
+        let checkpointRetryTimer = null;
+
+        async function fetchRecentCheckpoints(force = false) {
+            if (isFetchingCheckpoints && !force) return;
+            isFetchingCheckpoints = true;
+            try {
+                if (!window.go || !window.go.main || !window.go.main.App || !window.go.main.App.GetRecentCheckpoints) {
+                    if (!checkpointRetryTimer) {
+                        checkpointRetryTimer = setTimeout(() => {
+                            checkpointRetryTimer = null;
+                            fetchRecentCheckpoints(true);
+                        }, 400);
+                    }
+                    return;
+                }
+
+                let jobs = await window.go.main.App.GetRecentCheckpoints();
+                let techPanel = document.getElementById("recentJobsPanel");
+                let opPanel = document.getElementById("recentJobsPanelOp");
+
+                if (!jobs || jobs.length === 0) {
+                    const emptyHtml = `
+                        <div style="text-align: center; color: var(--text-dim); padding: 18px 10px; font-size: 0.78rem;">
+                            <div style="font-size: 1.4rem; margin-bottom: 4px;">📂</div>
+                            <div style="font-weight: 600; color: var(--text-main);">No Checkpoints Found</div>
+                            <div style="font-size: 0.7rem; color: var(--border-glow); margin-top: 2px;">Submit media above to generate your first checkpoint.</div>
+                        </div>`;
+                    if (techPanel && techPanel.innerHTML !== emptyHtml) techPanel.innerHTML = emptyHtml;
+                    if (opPanel && opPanel.innerHTML !== emptyHtml) opPanel.innerHTML = emptyHtml;
+                    return;
+                }
+
+                const jobsJson = JSON.stringify(jobs);
+                if (!force && jobsJson === lastRenderedJobsJson && currentJobId === lastSelectedJobId) {
+                    return;
+                }
+                lastRenderedJobsJson = jobsJson;
+                lastSelectedJobId = currentJobId;
+
+                if (!currentJobId && jobs.length > 0) {
+                    currentJobId = jobs[0].id;
+                    handleJobStatusUpdate(jobs[0].id, jobs[0].status);
+                }
+
+                let rjHtml = "";
+                jobs.forEach((job, idx) => {
+                    let stClass = (job.status || "UNKNOWN").toLowerCase();
+                    if (stClass.includes("audit")) stClass = "paused";
+                    const isSelected = (currentJobId === job.id);
+
+                    const titleText = escapeHtml(job.source_title || job.id);
+                    const createdAt = job.created_at || "";
+                    const tasksText = job.total_tasks > 0 ? `${job.done_tasks}/${job.total_tasks} tasks` : "";
+
+                    rjHtml += `
+                    <div class="job-card ${isSelected ? 'active' : ''}" onclick="selectJob('${job.id}', '${job.status}')">
+                        <div class="job-card-header">
+                            <div style="display: flex; align-items: center; gap: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                                <span class="job-card-dot ${stClass}"></span>
+                                <span style="font-weight: 700; color: ${isSelected ? 'var(--accent)' : 'var(--text-main)'};">${job.id}</span>
+                            </div>
+                            <div style="display: flex; align-items: center; gap: 6px;">
+                                ${createdAt ? `<span style="font-size: 0.65rem; color: var(--text-dim); font-weight: normal;">${createdAt}</span>` : ''}
+                                <span class="job-status-badge ${stClass}">${job.status}</span>
+                            </div>
+                        </div>
+
+                        <div class="job-card-title" title="${escapeHtml(job.source_file || '')}">
+                            📁 ${titleText}
+                        </div>
+
+                        <div class="job-card-meta">
+                            <span>${job.progress}%</span>
+                            <span>${tasksText}</span>
+                        </div>
+
+                        <div class="bar-track" style="height: 5px; margin: 4px 0 8px 0;">
+                            <div class="bar-fill" style="width: ${job.progress}%"></div>
+                        </div>
+
+                        <div class="job-card-actions" onclick="event.stopPropagation()">
+                            <button class="job-mini-btn" onclick="selectJob('${job.id}', '${job.status}')" title="Load as Active Checkpoint">
+                                ${isSelected ? '✓ Active' : '▶️ Select'}
+                            </button>
+                            <button class="job-mini-btn" onclick="openJobFolder('${job.id}')" title="Open Job Folder in Explorer">
+                                📂 Folder
+                            </button>
+                            <button class="job-mini-btn" onclick="inspectCheckpoint('${job.id}')" title="Inspect Tasks & DAG State">
+                                🔍 Inspect
+                            </button>
+                            ${job.status === 'COMPLETED' && job.has_media ? `
+                                <button class="job-mini-btn job-mini-accent" onclick="playJobMedia('${job.id}')" title="Play Media Output">
+                                    🎬 Output
+                                </button>` : ''}
+                            ${job.status === 'AUDIT_ASR' ? `
+                                <button class="job-mini-btn job-mini-warn" onclick="promptAudit('${job.id}', 'ASR')" title="Audit ASR Transcript">
+                                    ✏️ Audit
+                                </button>` : ''}
+                            ${job.status === 'AUDIT_NMT' ? `
+                                <button class="job-mini-btn job-mini-warn" onclick="promptAudit('${job.id}', 'NMT')" title="Audit Translation">
+                                    🌐 Audit
+                                </button>` : ''}
+                        </div>
+                    </div>`;
+                });
+
+                if (techPanel) techPanel.innerHTML = rjHtml;
+                if (opPanel) opPanel.innerHTML = rjHtml;
+
+            } catch (e) {
+                console.error("Error fetching checkpoints:", e);
+            } finally {
+                isFetchingCheckpoints = false;
+            }
+        }
+
+        function openJobFolder(jobId) {
+            if (window.go && window.go.main && window.go.main.App && window.go.main.App.OpenJobFolder) {
+                window.go.main.App.OpenJobFolder(jobId).then(() => {
+                    showToast(`📂 Opened folder for ${jobId}`, true);
+                }).catch(err => {
+                    showToast(`Error opening folder: ${err}`, false);
+                });
+            }
+        }
+
+        async function inspectCheckpoint(jobId) {
+            try {
+                if (!window.go || !window.go.main || !window.go.main.App) return;
+                let manifestStr = await window.go.main.App.GetJobManifest(jobId);
+                let manifest = JSON.parse(manifestStr);
+
+                document.getElementById('chkModalJobId').innerText = jobId;
+                document.getElementById('chkModalStatus').innerText = manifest.status || 'UNKNOWN';
+                let stClass = (manifest.status || 'UNKNOWN').toLowerCase();
+                if (stClass.includes("audit")) stClass = "paused";
+                document.getElementById('chkModalStatus').className = 'job-status-badge ' + stClass;
+                
+                let sourceDisplay = manifest.source_file ? manifest.source_file.split('\\').pop() : 'Unknown';
+                document.getElementById('chkModalSource').innerText = sourceDisplay;
+                document.getElementById('chkModalSource').title = manifest.source_file || '';
+
+                // Global tasks
+                let tasksHtml = '';
+                if (manifest.global_tasks) {
+                    for (let [task, st] of Object.entries(manifest.global_tasks)) {
+                        let badgeClass = st === 'DONE' ? 'done' : (st === 'RUNNING' ? 'running' : 'stopped');
+                        tasksHtml += `<div style="display: flex; justify-content: space-between; align-items: center; padding: 6px 10px; background: var(--bg-card); border-radius: 4px; border: 1px solid var(--border-dim);">
+                            <span style="font-family: monospace; font-size: 0.72rem; font-weight: bold;">${task}</span>
+                            <span class="job-status-badge ${badgeClass}" style="font-size: 0.62rem;">${st}</span>
+                        </div>`;
+                    }
+                }
+                document.getElementById('chkModalTasks').innerHTML = tasksHtml || '<div style="color: var(--text-dim); font-size: 0.75rem;">No global tasks</div>';
+
+                // Chunks
+                let chunksHtml = '';
+                if (manifest.chunks) {
+                    for (let [chunkKey, chunk] of Object.entries(manifest.chunks)) {
+                        let compStatus = '';
+                        if (chunk.components) {
+                            for (let [comp, st] of Object.entries(chunk.components)) {
+                                compStatus += `${comp}: ${st} `;
+                            }
+                        }
+                        chunksHtml += `<div style="display: flex; justify-content: space-between; align-items: center; padding: 4px 8px; font-size: 0.7rem; border-bottom: 1px solid var(--border-dim);">
+                            <span style="font-family: monospace; color: var(--accent); font-weight: 600;">${chunkKey}</span>
+                            <span style="color: var(--text-dim); font-family: monospace;">${compStatus}</span>
+                        </div>`;
+                    }
+                }
+                document.getElementById('chkModalChunks').innerHTML = chunksHtml || '<div style="color: var(--text-dim); font-size: 0.75rem;">No chunks recorded</div>';
+
+                document.getElementById('btnChkModalLoad').onclick = function() {
+                    selectJob(jobId, manifest.status || 'COMPLETED');
+                    closeCheckpointModal();
+                };
+                document.getElementById('btnChkModalFolder').onclick = function() {
+                    openJobFolder(jobId);
+                };
+
+                document.getElementById('checkpointModal').style.display = 'flex';
+            } catch (err) {
+                alert("Failed to load checkpoint manifest: " + err);
+            }
+        }
+
+        function closeCheckpointModal() {
+            document.getElementById('checkpointModal').style.display = 'none';
+        }
+
+        function playJobMedia(jobId) {
+            selectJob(jobId, 'COMPLETED');
+            renderMediaPlayer(jobId);
+            const player = document.getElementById('opMediaPlayer');
+            if (player) {
+                player.style.display = 'flex';
+                player.scrollIntoView({ behavior: 'smooth' });
+            }
+        }
+
         setInterval(async () => {
             try {
                 if (document.getElementById('dictModal') && document.getElementById('dictModal').style.display === 'flex') {
@@ -2277,40 +2770,7 @@
             } catch (e) { }
 
             try {
-                if (!window.go || !window.go.main || !window.go.main.App) return;
-
-                let jobs = await window.go.main.App.GetRecentCheckpoints();
-                if (!jobs || jobs.length === 0) return;
-
-                let rjHtml = "";
-                jobs.slice(0, 5).forEach((job, idx) => {
-                    let stClass = job.status.toLowerCase();
-                    if (stClass.includes("audit")) stClass = "paused";
-
-                    rjHtml += `<div class="job-card" onclick="selectJob('${job.id}', '${job.status}')">
-                        <div class="job-card-header">
-                            <span>${job.id}</span>
-                            <span class="job-status-badge ${stClass}">${job.status}</span>
-                        </div>
-                        <div class="bar-track" style="height: 6px; margin-top: 2px;">
-                            <div class="bar-fill" style="width: ${job.progress}%"></div>
-                        </div>
-                    </div>`;
-
-                    if (!currentJobId && idx === 0) {
-                        currentJobId = job.id;
-                    }
-
-                    if (currentJobId === job.id) {
-                        handleJobStatusUpdate(job.id, job.status);
-                    }
-                });
-
-                let techPanel = document.getElementById("recentJobsPanel");
-                let opPanel = document.getElementById("recentJobsPanelOp");
-                if (techPanel) techPanel.innerHTML = rjHtml;
-                if (opPanel) opPanel.innerHTML = rjHtml;
-
+                fetchRecentCheckpoints(false);
             } catch (e) { console.error("Error polling jobs dir:", e); }
         }, 2000);
 
@@ -2351,6 +2811,7 @@
             if (!currentJobId) return;
             window.go.main.App.StopJob(currentJobId).then(() => {
                 handleJobStatusUpdate(currentJobId, 'PAUSED');
+                fetchRecentCheckpoints(true);
             }).catch(err => alert(err));
         }
 
@@ -2360,6 +2821,7 @@
 
             window.go.main.App.ResumeJob(currentJobId).then(() => {
                 handleJobStatusUpdate(currentJobId, 'RUNNING');
+                fetchRecentCheckpoints(true);
             }).catch(err => alert(err));
         }
 
@@ -2894,6 +3356,36 @@
             }
         }
 
+        function displaySyncLog(title, fullText) {
+            let box = document.getElementById('dictSyncLogBox');
+            let titleEl = document.getElementById('dictSyncLogTitle');
+            let contentEl = document.getElementById('dictSyncLogContent');
+            if (!box || !contentEl) return;
+
+            if (titleEl) titleEl.innerText = title;
+
+            let lines = String(fullText).split('\n');
+            let formattedHtml = lines.map(line => {
+                let trimmed = escapeHtml(line);
+                if (line.includes('+') || line.includes('Pushed')) {
+                    return `<span style="color: #4ade80;">${trimmed}</span>`;
+                } else if (line.includes('~') || line.includes('Update')) {
+                    return `<span style="color: #38bdf8;">${trimmed}</span>`;
+                } else if (line.includes('Pulled') || line.includes('📥') || line.includes('🌐')) {
+                    return `<span style="color: #a78bfa;">${trimmed}</span>`;
+                } else if (line.includes('⚠️') || line.includes('🟡')) {
+                    return `<span style="color: #fbbf24;">${trimmed}</span>`;
+                } else if (line.includes('🔴') || line.includes('❌') || line.includes('Error')) {
+                    return `<span style="color: #f87171;">${trimmed}</span>`;
+                }
+                return `<span>${trimmed}</span>`;
+            }).join('\n');
+
+            contentEl.innerHTML = formattedHtml;
+            box.style.display = 'block';
+            box.scrollTop = 0;
+        }
+
         function syncLocalShard() {
             if (isSyncing) return;
             isSyncing = true;
@@ -2918,15 +3410,28 @@
                         btn.disabled = false;
                         btn.innerText = origText;
                     }
-                    showToast("📤 Local shard merged into domain dictionary & pushed to GitHub!", true);
+                    let lines = (res || "").split('\n');
+                    let summary = lines[0] || "Local shard merged into domain dictionary & pushed to GitHub!";
+                    showToast("📤 " + summary, true);
+                    displaySyncLog("📤 Local Shard Synced & Pushed to GitHub", res);
                     pollSyncStatus();
+                    if (isGlobalView && window.go.main.App.GetGlobalDictionary) {
+                        window.go.main.App.GetGlobalDictionary().then(dictJson => {
+                            try {
+                                globalDictData = unwrapRegexForUI(JSON.parse(dictJson));
+                                renderDictTab();
+                            } catch (e) {}
+                        });
+                    }
                 }).catch(err => {
                     isSyncing = false;
                     if (btn) {
                         btn.disabled = false;
                         btn.innerText = origText;
                     }
-                    showToast("⚠️ Sync Local Error: " + (err.message || err), false);
+                    let errMsg = err.message || err;
+                    showToast("⚠️ Sync Local Error: " + errMsg, false);
+                    displaySyncLog("❌ Sync Local Error", "Failed to sync local shard to GitHub:\n" + errMsg);
                     pollSyncStatus();
                 });
             } else {
@@ -2943,13 +3448,13 @@
             let origText = btn ? btn.innerText : '🌐 Sync Global';
             if (btn) {
                 btn.disabled = true;
-                btn.innerText = '🌐 Pulling Global...';
+                btn.innerText = '🌐 Syncing Global...';
             }
 
             let statusEl = document.getElementById('syncStatusIndicator');
             if (statusEl) {
                 statusEl.className = 'dict-btn dict-btn-secondary';
-                statusEl.innerText = '📡 Pulling Global...';
+                statusEl.innerText = '📡 Syncing Global...';
             }
 
             if (window.go && window.go.main && window.go.main.App.SyncGlobalRepo) {
@@ -2959,15 +3464,28 @@
                         btn.disabled = false;
                         btn.innerText = origText;
                     }
-                    showToast("🌐 Global repository synced from GitHub!", true);
+                    let lines = (res || "").split('\n');
+                    let summary = lines[0] || "Global repository synchronized!";
+                    showToast("🌐 " + summary, true);
+                    displaySyncLog("🌐 Global Repository Synced & Pushed", res);
                     pollSyncStatus();
+                    if (isGlobalView && window.go.main.App.GetGlobalDictionary) {
+                        window.go.main.App.GetGlobalDictionary().then(dictJson => {
+                            try {
+                                globalDictData = unwrapRegexForUI(JSON.parse(dictJson));
+                                renderDictTab();
+                            } catch (e) {}
+                        });
+                    }
                 }).catch(err => {
                     isSyncing = false;
                     if (btn) {
                         btn.disabled = false;
                         btn.innerText = origText;
                     }
-                    showToast("⚠️ Sync Global Error: " + (err.message || err), false);
+                    let errMsg = err.message || err;
+                    showToast("⚠️ Sync Global Error: " + errMsg, false);
+                    displaySyncLog("❌ Sync Global Error", "Failed to sync with global repository:\n" + errMsg);
                     pollSyncStatus();
                 });
             } else {
@@ -3006,7 +3524,8 @@
                             renderDictTab();
                         }
                     } catch (e) {}
-                    showToast("📖 Domain Dictionary updated with global changes!", true);
+                    showToast("📖 Domain Dictionary compiled and updated!", true);
+                    displaySyncLog("🔄 Domain Dictionary Updated", "Global domain dictionary compiled and consolidated with local shards.");
                     pollSyncStatus();
                 }).catch(err => {
                     isSyncing = false;
@@ -3014,7 +3533,9 @@
                         btn.disabled = false;
                         btn.innerText = origText;
                     }
-                    showToast("⚠️ Update Dict Error: " + (err.message || err), false);
+                    let errMsg = err.message || err;
+                    showToast("⚠️ Update Dict Error: " + errMsg, false);
+                    displaySyncLog("❌ Update Dict Error", "Failed to update domain dictionary:\n" + errMsg);
                     pollSyncStatus();
                 });
             } else {
@@ -3032,8 +3553,10 @@
         function onSyncIndicatorClick() {
             if (lastSyncStatusDetail && (lastSyncStatusDetail.includes("🔴") || lastSyncStatusDetail.includes("Error") || lastSyncStatusDetail.includes("Failed"))) {
                 alert("Git Sync Diagnostics:\n\n" + lastSyncStatusDetail + "\n\nPlease ensure your GitHub credentials or Personal Access Token (PAT) are properly configured for this repository.");
+            } else if (lastSyncStatusDetail && lastSyncStatusDetail.includes("🟡")) {
+                alert("Git Sync Status:\n\n🟡 Pending Push: Local dictionary updates are waiting to be pushed to GitHub.\n\nClick 'Sync Local' or 'Sync Global' to push your changes to GitHub.");
             } else {
-                pollSyncStatus();
+                alert("Git Sync Status:\n\n🟢 Synced: The Global Domain Dictionary is up-to-date with GitHub origin/main.");
             }
         }
 
@@ -3053,14 +3576,14 @@
                     } else {
                         el.innerText = '🔴 Sync Error';
                     }
-                    el.title = status + " (Click for details)";
-                } else if (status.includes("🟢") || status.includes("Online") || status.includes("Synced")) {
+                    el.title = status + " (Click for diagnostics)";
+                } else if (status.includes("🟢") || status.includes("Synced") || status.includes("Online")) {
                     el.className = 'dict-btn dict-btn-success';
-                    el.innerText = '🟢 Synced (Up to date)';
-                    el.title = 'Domain dictionary synchronized with GitHub';
+                    el.innerText = '🟢 Synced';
+                    el.title = 'Global Domain Dictionary is synchronized with GitHub';
                 } else {
                     el.className = 'dict-btn dict-btn-warning';
-                    el.innerText = '🟡 Pending Sync (Click to Push)';
+                    el.innerText = '🟡 Pending Push';
                     el.title = 'Local dictionary changes pending push to GitHub';
                 }
             });
@@ -3255,6 +3778,185 @@
                 });
             }
         }
+
+        // ==========================================
+        // 📊 TELEMETRY & STORAGE MANAGEMENT (LOCAL STACKDRIVER)
+        // ==========================================
+        let telemetryRawLogs = [];
+
+        function openTelemetryModal() {
+            let modal = document.getElementById('telemetryModal');
+            if (modal) modal.style.display = 'flex';
+            refreshTelemetryStats();
+            fetchRecentLogs();
+        }
+
+        function closeTelemetryModal() {
+            let modal = document.getElementById('telemetryModal');
+            if (modal) modal.style.display = 'none';
+        }
+
+        function refreshTelemetryStats() {
+            if (!window.go || !window.go.main || !window.go.main.App.GetLogStorageStats) return;
+
+            window.go.main.App.GetLogStorageStats().then(stats => {
+                if (!stats) return;
+
+                // Update navbar and interceptor card badges
+                let navEl = document.getElementById('navLogSize');
+                if (navEl) navEl.innerText = stats.total_size_formatted || '0 B';
+
+                let cardEl = document.getElementById('interceptorLogSizeBadge');
+                if (cardEl) cardEl.innerText = stats.total_size_formatted || '0 B';
+
+                // Modal elements
+                let label = document.getElementById('telemetryStorageLabel');
+                if (label) {
+                    label.innerText = `${stats.total_size_formatted} / ${stats.max_size_formatted} (${stats.usage_percent.toFixed(1)}%)`;
+                }
+
+                let bar = document.getElementById('telemetryStorageBar');
+                if (bar) {
+                    let pct = Math.min(Math.max(stats.usage_percent, 0.5), 100);
+                    bar.style.width = pct + '%';
+                    if (stats.usage_percent >= 90) {
+                        bar.style.background = 'linear-gradient(90deg, #ef4444, #b91c1c)';
+                    } else if (stats.usage_percent >= 80) {
+                        bar.style.background = 'linear-gradient(90deg, #f59e0b, #d97706)';
+                    } else {
+                        bar.style.background = 'linear-gradient(90deg, #3b82f6, #10b981)';
+                    }
+                }
+
+                let alertEl = document.getElementById('telemetryThresholdAlert');
+                if (alertEl) {
+                    alertEl.style.display = stats.is_near_threshold ? 'block' : 'none';
+                }
+
+                let gCount = document.getElementById('telemetryGlobalCount');
+                if (gCount) gCount.innerText = stats.global_log_count || 0;
+
+                let jCount = document.getElementById('telemetryJobCount');
+                if (jCount) jCount.innerText = stats.job_log_count || 0;
+
+                let oDate = document.getElementById('telemetryOldestDate');
+                if (oDate) oDate.innerText = stats.oldest_log_date || 'N/A';
+
+                let nDate = document.getElementById('telemetryNewestDate');
+                if (nDate) nDate.innerText = stats.newest_log_date || 'N/A';
+            }).catch(err => {
+                console.error("Failed to load telemetry stats", err);
+            });
+        }
+
+        function selectPeriodPreset(val, unit) {
+            let valInput = document.getElementById('telemetryPeriodValue');
+            let unitSelect = document.getElementById('telemetryPeriodUnit');
+            if (valInput) valInput.value = val;
+            if (unitSelect) unitSelect.value = unit;
+        }
+
+        function deleteLogsByFilter() {
+            let valInput = document.getElementById('telemetryPeriodValue');
+            let unitSelect = document.getElementById('telemetryPeriodUnit');
+            let val = parseInt(valInput?.value || "0");
+            let unit = unitSelect?.value || "days";
+
+            if (isNaN(val) || val <= 0) {
+                if (confirm("The retention period is empty or 0. This will clear ALL logs! Do you want to wipe all logs?")) {
+                    confirmClearAllLogs();
+                }
+                return;
+            }
+
+            if (!confirm(`Are you sure you want to delete all logs older than ${val} ${unit} from the local repository?`)) {
+                return;
+            }
+
+            if (!window.go || !window.go.main || !window.go.main.App.DeleteLogsByFilter) {
+                showToast("⚠️ Backend service not available.", false);
+                return;
+            }
+
+            window.go.main.App.DeleteLogsByFilter(val, unit, false).then(res => {
+                showToast(`🗑️ ${res.message || "Logs purged successfully!"}`, true);
+                refreshTelemetryStats();
+                fetchRecentLogs();
+            }).catch(err => {
+                showToast("❌ Error deleting logs: " + (err.message || err), false);
+            });
+        }
+
+        function confirmClearAllLogs() {
+            if (!confirm("⚠️ CAUTION: This will permanently delete ALL central Stackdriver logs and per-job logs from disk! Proceed?")) {
+                return;
+            }
+
+            if (!window.go || !window.go.main || !window.go.main.App.DeleteLogsByFilter) {
+                showToast("⚠️ Backend service not available.", false);
+                return;
+            }
+
+            window.go.main.App.DeleteLogsByFilter(0, "", true).then(res => {
+                showToast(`🧹 ${res.message || "All logs cleared!"}`, true);
+                refreshTelemetryStats();
+                fetchRecentLogs();
+            }).catch(err => {
+                showToast("❌ Error clearing logs: " + (err.message || err), false);
+            });
+        }
+
+        function fetchRecentLogs() {
+            if (!window.go || !window.go.main || !window.go.main.App.GetRecentTelemetryLogs) return;
+
+            window.go.main.App.GetRecentTelemetryLogs(100).then(lines => {
+                telemetryRawLogs = lines || [];
+                renderTelemetryViewer();
+            }).catch(() => {});
+        }
+
+        function renderTelemetryViewer() {
+            let viewer = document.getElementById('telemetryLogViewer');
+            if (!viewer) return;
+
+            let filterText = (document.getElementById('telemetryFilterInput')?.value || '').toLowerCase();
+            let levelFilter = document.getElementById('telemetryLevelFilter')?.value || 'ALL';
+
+            let filtered = telemetryRawLogs.filter(line => {
+                if (filterText && !line.toLowerCase().includes(filterText)) {
+                    return false;
+                }
+                if (levelFilter !== 'ALL' && !line.includes(`[${levelFilter}]`)) {
+                    return false;
+                }
+                return true;
+            });
+
+            if (filtered.length === 0) {
+                viewer.innerHTML = '<span style="color: #64748b;">No log entries match the current filter.</span>';
+                return;
+            }
+
+            let html = filtered.map(line => {
+                let escaped = escapeHtml(line);
+                if (line.includes('[ERROR]') || line.includes('❌')) {
+                    return `<span style="color: #f87171;">${escaped}</span>`;
+                } else if (line.includes('[WARN]') || line.includes('⚠️')) {
+                    return `<span style="color: #fbbf24;">${escaped}</span>`;
+                } else if (line.includes('[SYNC]')) {
+                    return `<span style="color: #a78bfa;">${escaped}</span>`;
+                } else if (line.includes('[DAG]')) {
+                    return `<span style="color: #38bdf8;">${escaped}</span>`;
+                }
+                return `<span>${escaped}</span>`;
+            }).join('\n');
+
+            viewer.innerHTML = html;
+        }
+
+        // Poll telemetry storage stats periodically
+        setInterval(refreshTelemetryStats, 15000);
+        setTimeout(refreshTelemetryStats, 1000);
 
         if (document.readyState === 'loading') {
             document.addEventListener('DOMContentLoaded', initSetupRunner);
