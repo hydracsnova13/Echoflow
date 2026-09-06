@@ -1963,44 +1963,101 @@
             }
         }
 
-        function selectJob(id, status) {
-            currentJobId = id;
-            document.getElementById('targetPath').value = id;
-            document.getElementById('targetPathOp').value = id;
-            syncInputs();
-            let upperStatus = status.toUpperCase();
-            if (upperStatus === "RUNNING") {
-                updateButtonStates('running');
-                document.getElementById("opStatusTitle").innerText = "Processing Active";
-                document.getElementById("opStatusTitle").style.color = "var(--accent)";
-                document.getElementById("opStep2").className = "op-step active";
-                document.getElementById("opMediaPlayer").style.display = "none";
-                currentRenderedJob = null;
+        function handleJobStatusUpdate(jobId, status) {
+            if (!jobId || !status) return;
+            const upperStatus = status.toUpperCase();
+
+            if (!currentJobId) {
+                currentJobId = jobId;
+            }
+
+            if (currentJobId !== jobId) return;
+
+            if (upperStatus === "PAUSED" || upperStatus === "STOPPED" || upperStatus === "ERROR") {
+                updateButtonStates('paused');
+                const stTitle = document.getElementById("opStatusTitle");
+                if (stTitle) {
+                    stTitle.innerText = "Processing Paused / Error";
+                    stTitle.style.color = "var(--warning)";
+                }
+                const s2 = document.getElementById("opStep2");
+                if (s2) s2.className = "op-step";
             } else if (upperStatus === "AUDIT_ASR") {
                 updateButtonStates('paused');
-                document.getElementById("opStatusTitle").innerText = "Awaiting ASR Verification";
-                document.getElementById("opStatusTitle").style.color = "var(--warning)";
-                document.getElementById("opStep2").className = "op-step";
-                promptAudit(id, 'ASR');
+                const stTitle = document.getElementById("opStatusTitle");
+                if (stTitle) {
+                    stTitle.innerText = "Awaiting ASR Verification";
+                    stTitle.style.color = "var(--warning)";
+                }
+                const s2 = document.getElementById("opStep2");
+                if (s2) s2.className = "op-step";
+                if (!auditPromptedJobs.has(jobId + "_ASR")) promptAudit(jobId, 'ASR');
             } else if (upperStatus === "AUDIT_NMT") {
                 updateButtonStates('paused');
-                document.getElementById("opStatusTitle").innerText = "Awaiting Translation Verification";
-                document.getElementById("opStatusTitle").style.color = "var(--warning)";
-                document.getElementById("opStep2").className = "op-step";
-                promptAudit(id, 'NMT');
-            } else if (upperStatus === "STOPPED" || upperStatus === "PAUSED" || upperStatus === "ERROR") {
-                updateButtonStates('paused');
-                document.getElementById("opStatusTitle").innerText = "Processing Paused / Error";
-                document.getElementById("opStatusTitle").style.color = "var(--warning)";
-                document.getElementById("opStep2").className = "op-step";
+                const stTitle = document.getElementById("opStatusTitle");
+                if (stTitle) {
+                    stTitle.innerText = "Awaiting Translation Verification";
+                    stTitle.style.color = "var(--warning)";
+                }
+                const s2 = document.getElementById("opStep2");
+                if (s2) s2.className = "op-step";
+                if (!auditPromptedJobs.has(jobId + "_NMT")) promptAudit(jobId, 'NMT');
             } else if (upperStatus === "DONE" || upperStatus === "COMPLETED") {
                 updateButtonStates('completed');
-                document.getElementById("opStatusTitle").innerText = "Processing Complete";
-                document.getElementById("opStatusTitle").style.color = "var(--success)";
-                document.getElementById("opStep2").className = "op-step done";
-                document.getElementById("opStep3").className = "op-step done";
-                renderMediaPlayer(id);
+                const stTitle = document.getElementById("opStatusTitle");
+                if (stTitle) {
+                    stTitle.innerText = "Processing Complete";
+                    stTitle.style.color = "var(--success)";
+                }
+                const s1 = document.getElementById("opStep1");
+                if (s1) s1.className = "op-step done";
+                const l1 = document.getElementById("opLine1");
+                if (l1) l1.className = "op-line active";
+                const s2 = document.getElementById("opStep2");
+                if (s2) s2.className = "op-step done";
+                const l2 = document.getElementById("opLine2");
+                if (l2) l2.className = "op-line active";
+                const s3 = document.getElementById("opStep3");
+                if (s3) s3.className = "op-step done";
+
+                if (window.dynamicComps) {
+                    dynamicComps.forEach(comp => {
+                        const node = document.getElementById('node-' + comp);
+                        if (node) node.className = 'dag-node done';
+                    });
+                }
+                document.querySelectorAll('.dag-edge').forEach(edge => {
+                    edge.className = 'dag-edge done';
+                });
+
+                renderMediaPlayer(jobId);
+                promptCandidateTermsForJob(jobId);
+            } else if (upperStatus === "RUNNING") {
+                updateButtonStates('running');
+                const stTitle = document.getElementById("opStatusTitle");
+                if (stTitle) {
+                    stTitle.innerText = "Processing Active";
+                    stTitle.style.color = "var(--accent)";
+                }
+                const s1 = document.getElementById("opStep1");
+                if (s1) s1.className = "op-step done";
+                const l1 = document.getElementById("opLine1");
+                if (l1) l1.className = "op-line active";
+                const s2 = document.getElementById("opStep2");
+                if (s2) s2.className = "op-step active";
+                const s3 = document.getElementById("opStep3");
+                if (s3) s3.className = "op-step";
+                const player = document.getElementById("opMediaPlayer");
+                if (player) player.style.display = "none";
+                currentRenderedJob = null;
             }
+        }
+
+        function selectJob(id, status) {
+            currentJobId = id;
+            if (document.getElementById('targetPath')) document.getElementById('targetPath').value = id;
+            if (document.getElementById('targetPathOp')) document.getElementById('targetPathOp').value = id;
+            handleJobStatusUpdate(id, status);
         }
 
         async function buildDAG() {
@@ -2226,7 +2283,7 @@
                 if (!jobs || jobs.length === 0) return;
 
                 let rjHtml = "";
-                jobs.slice(0, 5).forEach(job => {
+                jobs.slice(0, 5).forEach((job, idx) => {
                     let stClass = job.status.toLowerCase();
                     if (stClass.includes("audit")) stClass = "paused";
 
@@ -2240,43 +2297,12 @@
                         </div>
                     </div>`;
 
-                    let cleanInput = document.getElementById('targetPath').value.replace(/['"]/g, '').trim();
-                    if (currentJobId === job.id && (cleanInput === currentJobId || cleanInput.startsWith("JOB-"))) {
-                        let upperStatus = job.status.toUpperCase();
+                    if (!currentJobId && idx === 0) {
+                        currentJobId = job.id;
+                    }
 
-                        if (upperStatus === "PAUSED" || upperStatus === "STOPPED" || upperStatus === "ERROR") {
-                            updateButtonStates('paused');
-                            document.getElementById("opStatusTitle").innerText = "Processing Paused / Error";
-                            document.getElementById("opStatusTitle").style.color = "var(--warning)";
-                            document.getElementById("opStep2").className = "op-step";
-                        }
-                        else if (upperStatus === "AUDIT_ASR") {
-                            updateButtonStates('paused');
-                            document.getElementById("opStatusTitle").innerText = "Awaiting ASR Verification";
-                            document.getElementById("opStatusTitle").style.color = "var(--warning)";
-                            if (!auditPromptedJobs.has(job.id + "_ASR")) promptAudit(job.id, 'ASR');
-                        }
-                        else if (upperStatus === "AUDIT_NMT") {
-                            updateButtonStates('paused');
-                            document.getElementById("opStatusTitle").innerText = "Awaiting Translation Verification";
-                            document.getElementById("opStatusTitle").style.color = "var(--warning)";
-                            if (!auditPromptedJobs.has(job.id + "_NMT")) promptAudit(job.id, 'NMT');
-                        }
-                        else if (upperStatus === "DONE" || upperStatus === "COMPLETED") {
-                            updateButtonStates('completed');
-                            document.getElementById("opStatusTitle").innerText = "Processing Complete";
-                            document.getElementById("opStatusTitle").style.color = "var(--success)";
-                            document.getElementById("opStep2").className = "op-step done";
-                            document.getElementById("opLine2").className = "op-line active";
-                            document.getElementById("opStep3").className = "op-step done";
-
-                            renderMediaPlayer(job.id);
-                            promptCandidateTermsForJob(job.id);
-                        } else if (upperStatus === "RUNNING") {
-                            updateButtonStates('running');
-                            document.getElementById("opStatusTitle").innerText = "Processing Active";
-                            document.getElementById("opStatusTitle").style.color = "var(--accent)";
-                        }
+                    if (currentJobId === job.id) {
+                        handleJobStatusUpdate(job.id, job.status);
                     }
                 });
 
@@ -2324,10 +2350,7 @@
         function stopJob() {
             if (!currentJobId) return;
             window.go.main.App.StopJob(currentJobId).then(() => {
-                updateButtonStates('paused');
-                document.getElementById("opStatusTitle").innerText = "Processing Paused";
-                document.getElementById("opStatusTitle").style.color = "var(--warning)";
-                document.getElementById("opStep2").className = "op-step";
+                handleJobStatusUpdate(currentJobId, 'PAUSED');
             }).catch(err => alert(err));
         }
 
@@ -2336,11 +2359,16 @@
             if (!currentJobId) return;
 
             window.go.main.App.ResumeJob(currentJobId).then(() => {
-                updateButtonStates('running');
-                document.getElementById("opStatusTitle").innerText = "Processing Active";
-                document.getElementById("opStatusTitle").style.color = "var(--accent)";
-                document.getElementById("opStep2").className = "op-step active";
+                handleJobStatusUpdate(currentJobId, 'RUNNING');
             }).catch(err => alert(err));
+        }
+
+        if (window.runtime && window.runtime.EventsOn) {
+            window.runtime.EventsOn("job_status_change", function (data) {
+                if (data && data.job_id && data.status) {
+                    handleJobStatusUpdate(data.job_id, data.status);
+                }
+            });
         }
 
         window.runtime.EventsOn("telemetry_update", function (data) {
@@ -2371,7 +2399,22 @@
             logBox.innerHTML = logHtml;
             if (isScrolledToBottom) logBox.scrollTop = logBox.scrollHeight;
 
-            if (data.global_tasks) {
+            if (data.active_job_id && (data.job_status || data.job_complete)) {
+                let st = data.job_status || (data.job_complete ? "COMPLETED" : "RUNNING");
+                handleJobStatusUpdate(data.active_job_id, st);
+            }
+
+            if (data.job_complete) {
+                if (window.dynamicComps) {
+                    dynamicComps.forEach((comp) => {
+                        let node = document.getElementById('node-' + comp);
+                        if (node) node.className = 'dag-node done';
+                    });
+                }
+                document.querySelectorAll('.dag-edge').forEach(edge => {
+                    edge.className = 'dag-edge done';
+                });
+            } else if (data.global_tasks) {
                 let anyActive = false;
                 dynamicComps.forEach((comp) => {
                     let node = document.getElementById('node-' + comp);
@@ -2387,7 +2430,7 @@
                         let activeCount = workers.filter(w => w.IsActive || w.Status === 'ACTIVE').length;
                         let q = data.queue_backlogs ? (data.queue_backlogs[comp] || 0) : 0;
                         isActive = (activeCount > 0 || q > 0);
-                        isDone = data.job_complete;
+                        isDone = false;
                     }
 
                     if (isActive) { node.className = 'dag-node active'; anyActive = true; }
@@ -2395,7 +2438,7 @@
                     else { node.className = 'dag-node'; }
                 });
                 document.querySelectorAll('.dag-edge').forEach(edge => {
-                    edge.className = anyActive || data.job_complete ? 'dag-edge active' : 'dag-edge';
+                    edge.className = anyActive ? 'dag-edge active' : 'dag-edge';
                 });
             }
 

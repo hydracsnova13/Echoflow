@@ -2,12 +2,22 @@ import sys
 import os
 import re
 import json
-import psutil
 import gc
 import threading
 import queue
-from faster_whisper import WhisperModel
 import multiprocessing
+
+_faster_whisper_error = None
+try:
+    from faster_whisper import WhisperModel
+except Exception as e:
+    WhisperModel = None
+    _faster_whisper_error = str(e)
+
+try:
+    import psutil
+except Exception:
+    psutil = None
 
 # 🚀 OPTIMIZED: Unleash full CPU power for sequential execution (leaves 1 core for OS)
 total_cores = multiprocessing.cpu_count() or 4
@@ -60,28 +70,61 @@ def reader_thread(q):
     q.put(None)
 
 def boot_daemon():
+    if WhisperModel is None:
+        send_ipc({
+            "status": "error",
+            "error": f"❌ FATAL: Cannot import 'faster_whisper' ({_faster_whisper_error}). If missing DLL, install Microsoft Visual C++ 2015-2022 Redistributable (x64)."
+        })
+        return
+
     project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     local_model_path = os.path.join(project_root, "models", "whisper-medium")
+    fallback_small_path = os.path.join(project_root, "models", "whisper-small")
     
-    if not os.path.exists(local_model_path) or not os.listdir(local_model_path):
-        send_ipc({"status": "error", "error": f"❌ FATAL: Local Whisper model missing at {local_model_path}"})
-        return
+    target_model = None
+    local_only = True
+
+    if os.path.exists(local_model_path) and os.listdir(local_model_path):
+        target_model = local_model_path
+        local_only = True
+    elif os.path.exists(fallback_small_path) and os.listdir(fallback_small_path):
+        print(f"ℹ️ [WhisperTranscriber] whisper-medium missing, using fallback: {fallback_small_path}", flush=True)
+        target_model = fallback_small_path
+        local_only = True
+    else:
+        # Neither local model found
+        print("ℹ️ [WhisperTranscriber] No local model found. Attempting online download of Systran/faster-whisper-medium...", flush=True)
+        target_model = "Systran/faster-whisper-medium"
+        local_only = False
 
     try:
         model = WhisperModel(
-            local_model_path, 
+            target_model, 
             device="cpu", 
             compute_type="int8", 
             cpu_threads=int(num_cores),
             num_workers=1,
-            local_files_only=True
+            local_files_only=local_only
         )
     except Exception as e:
-        send_ipc({"status": "error", "error": f"❌ FATAL: Whisper Boot crash: {e}"})
+        err_msg = str(e)
+        if not local_only and any(w in err_msg.lower() for w in ["offline", "connection", "resolve", "network", "getaddrinfo"]):
+            send_ipc({
+                "status": "error",
+                "error": f"❌ FATAL: Local Whisper model missing at '{local_model_path}' and offline/no internet. Please run 'Environment Setup' from the Operator UI to download models."
+            })
+        else:
+            send_ipc({"status": "error", "error": f"❌ FATAL: Whisper Boot crash ({type(e).__name__}): {e}"})
         return
 
-    process = psutil.Process(os.getpid())
-    send_ipc({"status": "ready", "actual_ram_mb": process.memory_info().rss / (1024 * 1024)})
+    ram_mb = 1200.0
+    if psutil is not None:
+        try:
+            process = psutil.Process(os.getpid())
+            ram_mb = process.memory_info().rss / (1024 * 1024)
+        except Exception:
+            pass
+    send_ipc({"status": "ready", "actual_ram_mb": ram_mb})
 
     input_queue = queue.Queue()
     t = threading.Thread(target=reader_thread, args=(input_queue,))

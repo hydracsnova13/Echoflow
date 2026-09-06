@@ -235,7 +235,8 @@ if hf_token:
 else:
     print("⚠️ WARNING: No HF_TOKEN provided! Gated models will fail if access is restricted.")
 
-models_dir = r"{models_dir}"
+base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+models_dir = os.path.join(base_dir, "models")
 models = {{
     "Systran/faster-whisper-medium": "whisper-medium",
     "ai4bharat/indictrans2-indic-en-1B": "indictrans2-indic-en-1B",

@@ -70,6 +70,8 @@ type TelemetrySnapshot struct {
 	ChunkProgress  map[string]map[string]int `json:"chunk_progress"`
 	GlobalTasks    map[string]string         `json:"global_tasks"`
 	JobComplete    bool                      `json:"job_complete"`
+	ActiveJobID    string                    `json:"active_job_id"`
+	JobStatus      string                    `json:"job_status"`
 }
 
 type WorkerStat struct {
@@ -386,25 +388,90 @@ func (m *MemoryManager) spawnWorkerDynamic(comp string, meta PipelineComponent) 
 	}
 
 	pythonExec := m.GetPythonExec(meta.EnvName)
-	cmd := exec.Command(pythonExec, filepath.Join(m.ProjectRoot, meta.Script))
-	cmd.Env = append(os.Environ(), "PYTHONIOENCODING=utf-8")
+	if _, err := os.Stat(pythonExec); os.IsNotExist(err) {
+		m.LogToUI(fmt.Sprintf("❌ [%s] Python virtual environment '%s' not found (%s). Please run Environment Setup in Operator view first!", comp, meta.EnvName, pythonExec))
+		if !m.LiveRAMMode {
+			m.CurrentRAMMB -= estRAM
+		}
+		return nil
+	}
+
+	scriptPath := filepath.Join(m.ProjectRoot, meta.Script)
+	if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
+		m.LogToUI(fmt.Sprintf("❌ [%s] Daemon script not found at '%s'!", comp, scriptPath))
+		if !m.LiveRAMMode {
+			m.CurrentRAMMB -= estRAM
+		}
+		return nil
+	}
+
+	cmd := exec.Command(pythonExec, scriptPath)
+	cmd.Env = append(os.Environ(), "PYTHONIOENCODING=utf-8", "PYTHONUNBUFFERED=1")
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 
-	stdin, _ := cmd.StdinPipe()
-	stdout, _ := cmd.StdoutPipe()
-	stderr, _ := cmd.StderrPipe()
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		m.LogToUI(fmt.Sprintf("❌ [%s] Failed to open stdin pipe: %v", comp, err))
+		if !m.LiveRAMMode {
+			m.CurrentRAMMB -= estRAM
+		}
+		return nil
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		m.LogToUI(fmt.Sprintf("❌ [%s] Failed to open stdout pipe: %v", comp, err))
+		if !m.LiveRAMMode {
+			m.CurrentRAMMB -= estRAM
+		}
+		return nil
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		m.LogToUI(fmt.Sprintf("❌ [%s] Failed to open stderr pipe: %v", comp, err))
+		if !m.LiveRAMMode {
+			m.CurrentRAMMB -= estRAM
+		}
+		return nil
+	}
 
-	cmd.Start()
+	if err := cmd.Start(); err != nil {
+		m.LogToUI(fmt.Sprintf("❌ [%s] Failed to spawn process: %v", comp, err))
+		if !m.LiveRAMMode {
+			m.CurrentRAMMB -= estRAM
+		}
+		return nil
+	}
+
+	errScanner := bufio.NewScanner(stderr)
+	var bootErrLines []string
+	var bootErrMu sync.Mutex
+
+	go func() {
+		for errScanner.Scan() {
+			rawText := errScanner.Text()
+			txt := strings.ToLower(rawText)
+			if !strings.Contains(txt, "xnnpack") && !strings.Contains(txt, "inference_feedback_manager") &&
+				!strings.Contains(txt, "created tensorflow lite") && !strings.Contains(txt, "clearcut") &&
+				!strings.Contains(txt, "failed_precondition") {
+				bootErrMu.Lock()
+				if len(bootErrLines) < 20 {
+					bootErrLines = append(bootErrLines, rawText)
+				}
+				bootErrMu.Unlock()
+				m.LogToUI(fmt.Sprintf("⚠️ [%s] STDERR: %s", comp, rawText))
+			}
+		}
+	}()
 
 	scanner := bufio.NewScanner(stdout)
 	buf := make([]byte, 0, 64*1024)
 	scanner.Buffer(buf, 1024*1024)
-	errScanner := bufio.NewScanner(stderr)
 
 	handshakeFound := false
 	var actualRamMB float64
+	var fatalError string
 
-	for i := 0; i < 100; i++ {
+	for i := 0; i < 200; i++ {
 		if !scanner.Scan() {
 			break
 		}
@@ -415,12 +482,19 @@ func (m *MemoryManager) spawnWorkerDynamic(comp string, meta PipelineComponent) 
 			jsonStr := line[idx+len("ECHOFLOW_IPC__"):]
 			var resp struct {
 				Status      string  `json:"status"`
+				Error       string  `json:"error"`
 				ActualRamMB float64 `json:"actual_ram_mb"`
 			}
-			if err := json.Unmarshal([]byte(jsonStr), &resp); err == nil && resp.Status == "ready" {
-				handshakeFound = true
-				actualRamMB = resp.ActualRamMB
-				break
+			if err := json.Unmarshal([]byte(jsonStr), &resp); err == nil {
+				if resp.Status == "ready" {
+					handshakeFound = true
+					actualRamMB = resp.ActualRamMB
+					break
+				} else if resp.Status == "error" {
+					fatalError = resp.Error
+					m.LogToUI(fmt.Sprintf("❌ [%s Boot Error] %s", comp, resp.Error))
+					break
+				}
 			}
 		} else {
 			if strings.TrimSpace(line) != "" {
@@ -446,21 +520,32 @@ func (m *MemoryManager) spawnWorkerDynamic(comp string, meta PipelineComponent) 
 			IsActive:    false,
 		}
 		m.ActiveWorkers = append(m.ActiveWorkers, worker)
-
-		go func() {
-			for errScanner.Scan() {
-				txt := strings.ToLower(errScanner.Text())
-				if !strings.Contains(txt, "xnnpack") && !strings.Contains(txt, "inference_feedback_manager") &&
-					!strings.Contains(txt, "created tensorflow lite") && !strings.Contains(txt, "clearcut") &&
-					!strings.Contains(txt, "failed_precondition") {
-					m.LogToUI(fmt.Sprintf("⚠️ [%s] STDERR: %s", comp, errScanner.Text()))
-				}
-			}
-		}()
 		return worker
 	}
 
-	m.LogToUI(fmt.Sprintf("❌ [%s] Daemon failed to send valid handshake.", comp))
+	if fatalError != "" {
+		m.LogToUI(fmt.Sprintf("❌ [%s] Daemon failed to initialize: %s", comp, fatalError))
+	} else {
+		bootErrMu.Lock()
+		numErrs := len(bootErrLines)
+		var lastErr string
+		if numErrs > 0 {
+			lastErr = bootErrLines[numErrs-1]
+		}
+		bootErrMu.Unlock()
+
+		if lastErr != "" {
+			m.LogToUI(fmt.Sprintf("❌ [%s] Daemon crashed during boot: %s", comp, lastErr))
+		} else {
+			m.LogToUI(fmt.Sprintf("❌ [%s] Daemon failed to send valid handshake (no response from process).", comp))
+		}
+	}
+
+	if cmd.Process != nil {
+		_ = cmd.Process.Kill()
+		go func(c *exec.Cmd) { _ = c.Wait() }(cmd)
+	}
+
 	if !m.LiveRAMMode {
 		m.CurrentRAMMB -= estRAM
 	}
@@ -739,6 +824,8 @@ func (m *MemoryManager) StartTelemetryEmitter(ctx context.Context) {
 				if latestJob != "" {
 					job := m.Checkpoints.ActiveJobs[latestJob]
 					job.Mu.Lock()
+					snap.ActiveJobID = latestJob
+					snap.JobStatus = string(job.Status)
 					for k, v := range job.GlobalTasks {
 						snap.GlobalTasks[k] = string(v)
 					}
@@ -752,5 +839,14 @@ func (m *MemoryManager) StartTelemetryEmitter(ctx context.Context) {
 
 			runtime.EventsEmit(m.ctx, "telemetry_update", snap)
 		}
+	}
+}
+
+func (m *MemoryManager) EmitJobStatus(jobID, status string) {
+	if m.ctx != nil {
+		runtime.EventsEmit(m.ctx, "job_status_change", map[string]string{
+			"job_id": jobID,
+			"status": status,
+		})
 	}
 }

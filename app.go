@@ -250,11 +250,24 @@ func (a *App) GetRecentCheckpoints() ([]JobSummary, error) {
 					progress = int((float64(done) / float64(total)) * 100)
 				}
 
-				if progress == 100 && status == "RUNNING" {
+				if memJob := a.MM.Checkpoints.GetJob(entry.Name()); memJob != nil {
+					memJob.Mu.Lock()
+					if string(memJob.Status) != "" {
+						status = string(memJob.Status)
+					}
+					memJob.Mu.Unlock()
+				}
+
+				if progress == 100 && (status == "RUNNING" || status == "DONE") {
 					status = "COMPLETED"
 					state["status"] = status
 					if healedBytes, err := json.MarshalIndent(state, "", "  "); err == nil {
 						os.WriteFile(manifestPath, healedBytes, 0644)
+					}
+					if memJob := a.MM.Checkpoints.GetJob(entry.Name()); memJob != nil {
+						memJob.Mu.Lock()
+						memJob.Status = broker.JobDone
+						memJob.Mu.Unlock()
 					}
 				}
 
@@ -349,6 +362,7 @@ func (a *App) SubmitJob(targetPath string, sourceLang string, targetLang string,
 
 	a.MM.Checkpoints.InitializeJob(jobID, destPath, filepath.Join(a.MM.ProjectRoot, "workspace"))
 	a.MM.LogToUI(fmt.Sprintf("✅ Job %s safely created! Input: [%s] -> Output: [%s]", jobID, strings.ToUpper(mediaType), strings.ToUpper(targetOutFormat)))
+	a.MM.EmitJobStatus(jobID, "RUNNING")
 
 	go a.DAG.EvaluateJob(jobID)
 	return jobID, nil
@@ -374,6 +388,7 @@ func (a *App) StopJob(jobID string) error {
 
 	job.SetStatus(broker.JobPaused)
 	a.MM.ClearPendingForJob(jobID)
+	a.MM.EmitJobStatus(jobID, "PAUSED")
 	a.MM.LogToUI(fmt.Sprintf("✅ Job %s successfully paused. Engine will gracefully halt.", jobID))
 	return nil
 }
@@ -395,6 +410,7 @@ func (a *App) ResumeJob(jobID string) error {
 	a.MM.ClearPendingForJob(jobID)
 	job.ResetIncompleteTasks()
 	job.Save()
+	a.MM.EmitJobStatus(jobID, "RUNNING")
 
 	time.Sleep(200 * time.Millisecond)
 
@@ -515,6 +531,7 @@ func (a *App) ApproveASRTranscript(jobID string, editedJSONData string) (string,
 	job.Mu.Unlock()
 	job.Save()
 
+	a.MM.EmitJobStatus(jobID, "RUNNING")
 	a.MM.LogToUI(fmt.Sprintf("▶️ ASR Audit Approved. Resuming DAG for Job %s...", jobID))
 	go a.DAG.EvaluateJob(jobID)
 
@@ -546,6 +563,7 @@ func (a *App) ApproveNMTTranscript(jobID string, editedJSONData string) (string,
 	job.Mu.Unlock()
 	job.Save()
 
+	a.MM.EmitJobStatus(jobID, "RUNNING")
 	a.MM.LogToUI(fmt.Sprintf("▶️ NMT Audit Approved. Resuming DAG for Job %s...", jobID))
 	go a.DAG.EvaluateJob(jobID)
 

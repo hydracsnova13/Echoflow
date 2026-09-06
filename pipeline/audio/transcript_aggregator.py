@@ -88,9 +88,9 @@ def load_domain_dictionary():
     parsed_shards.sort(key=lambda x: x[0])
 
     for _, shard_data in parsed_shards:
-        if "asr_corrections" in shard_data:
+        if "asr_corrections" in shard_data and isinstance(shard_data["asr_corrections"], dict):
             compiled_data["asr_corrections"].update(shard_data["asr_corrections"])
-        if "asr_stem_patterns" in shard_data:
+        if "asr_stem_patterns" in shard_data and isinstance(shard_data["asr_stem_patterns"], list):
             compiled_data["asr_stem_patterns"].extend(shard_data["asr_stem_patterns"])
 
     ASR_CORRECTIONS = compiled_data.get("asr_corrections", {})

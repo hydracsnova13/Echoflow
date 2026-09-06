@@ -182,6 +182,7 @@ func (d *DAGExecutor) EvaluateJob(jobID string) {
 		if job.GlobalTasks["TranscriptAggregator"] == broker.StateDone && !job.AuditASRDone {
 			if job.Status != broker.JobAuditASR {
 				job.SetStatus(broker.JobAuditASR)
+				d.MemoryManager.EmitJobStatus(jobID, "AUDIT_ASR")
 				d.MemoryManager.LogToUI(fmt.Sprintf("⏸️ [DAG Engine] Job %s paused for Human-in-the-Loop ASR Audit.", jobID))
 			}
 			return
@@ -189,6 +190,7 @@ func (d *DAGExecutor) EvaluateJob(jobID string) {
 		if job.GlobalTasks["NMTTranslator"] == broker.StateDone && !job.AuditNMTDone {
 			if job.Status != broker.JobAuditNMT {
 				job.SetStatus(broker.JobAuditNMT)
+				d.MemoryManager.EmitJobStatus(jobID, "AUDIT_NMT")
 				d.MemoryManager.LogToUI(fmt.Sprintf("⏸️ [DAG Engine] Job %s paused for Human-in-the-Loop NMT Audit.", jobID))
 			}
 			return
@@ -338,6 +340,7 @@ func (d *DAGExecutor) EvaluateJob(jobID string) {
 
 		if hasFatalError {
 			job.SetStatus(broker.JobPaused)
+			d.MemoryManager.EmitJobStatus(jobID, "PAUSED")
 			d.MemoryManager.LogToUI(fmt.Sprintf("⚠️ [DAG Engine] Job %s suspended after exceeding retry limits.", jobID))
 			return
 		}
@@ -345,6 +348,7 @@ func (d *DAGExecutor) EvaluateJob(jobID string) {
 		if d.isJobComplete(job, mediaType, outputFormat) {
 			job.SetStatus(broker.JobDone)
 			atomic.AddInt32(&d.MemoryManager.CompletedTasks, 1)
+			d.MemoryManager.EmitJobStatus(jobID, "COMPLETED")
 			d.MemoryManager.LogToUI(fmt.Sprintf("🏁 [DAG Engine] Job %s COMPLETED! All branches synchronized.", jobID))
 			return
 		}
