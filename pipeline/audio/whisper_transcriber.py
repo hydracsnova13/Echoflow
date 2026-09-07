@@ -97,6 +97,7 @@ def boot_daemon():
         target_model = "Systran/faster-whisper-medium"
         local_only = False
 
+    model = None
     try:
         model = WhisperModel(
             target_model, 
@@ -108,14 +109,55 @@ def boot_daemon():
         )
     except Exception as e:
         err_msg = str(e)
-        if not local_only and any(w in err_msg.lower() for w in ["offline", "connection", "resolve", "network", "getaddrinfo"]):
+        is_oom = any(w in err_msg.lower() for w in ["mkl_malloc", "allocate memory", "out of memory", "bad_alloc"])
+        
+        # If whisper-medium ran out of RAM, attempt fallback to whisper-small if available
+        if is_oom and target_model != fallback_small_path and os.path.exists(fallback_small_path) and os.listdir(fallback_small_path):
+            print(f"⚠️ [WhisperTranscriber] Primary model '{os.path.basename(target_model)}' failed memory allocation ({err_msg}). Attempting automatic fallback to '{fallback_small_path}'...", flush=True)
+            try:
+                model = WhisperModel(
+                    fallback_small_path,
+                    device="cpu",
+                    compute_type="int8",
+                    cpu_threads=int(num_cores),
+                    num_workers=1,
+                    local_files_only=True
+                )
+                print("✅ [WhisperTranscriber] Fallback to whisper-small succeeded!", flush=True)
+            except Exception as fb_err:
+                fb_msg = str(fb_err)
+                send_ipc({
+                    "status": "error",
+                    "error": (
+                        f"❌ FATAL: Whisper Out of Memory ({type(e).__name__}): {err_msg}. "
+                        "Fallback to whisper-small also failed. "
+                        "Action Required: (1) Increase Windows Virtual Memory (Pagefile) to at least 16 GB; "
+                        "(2) Close other memory-intensive applications; "
+                        "(3) In UI settings, select 'Fast' transcription quality."
+                    )
+                })
+                return
+        elif is_oom:
+            send_ipc({
+                "status": "error",
+                "error": (
+                    f"❌ FATAL: Whisper Out of Memory (mkl_malloc): {err_msg}. "
+                    "The system does not have enough free RAM to allocate the Whisper model. "
+                    "Action Required: (1) In UI, set Transcription Quality to 'Fast'; "
+                    "(2) Increase Windows Virtual Memory (Pagefile) to 16 GB; "
+                    "(3) Close high-RAM applications."
+                )
+            })
+            return
+        elif not local_only and any(w in err_msg.lower() for w in ["offline", "connection", "resolve", "network", "getaddrinfo"]):
             send_ipc({
                 "status": "error",
                 "error": f"❌ FATAL: Local Whisper model missing at '{local_model_path}' and offline/no internet. Please run 'Environment Setup' from the Operator UI to download models."
             })
+            return
         else:
             send_ipc({"status": "error", "error": f"❌ FATAL: Whisper Boot crash ({type(e).__name__}): {e}"})
-        return
+            return
 
     ram_mb = 1200.0
     if psutil is not None:

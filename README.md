@@ -38,7 +38,12 @@
   - [DAG Execution Pipeline](#dag-execution-pipeline)
   - [System Runtime Topology](#system-runtime-topology)
 - [Tech Stack](#-tech-stack)
-- [System Prerequisites](#-system-prerequisites)
+- [System Requirements & Hardware Matrix](#-system-requirements--hardware-matrix)
+  - [Hardware Sizing Matrix](#hardware-sizing-matrix)
+  - [Software Prerequisites](#software-prerequisites)
+  - [Windows Pagefile (Virtual Memory) Configuration Guide](#windows-pagefile-virtual-memory-configuration-guide)
+  - [Collaborator Git Setup for Domain Dictionary](#collaborator-git-setup-for-domain-dictionary)
+  - [Logging & Stackdriver Telemetry Architecture](#logging--stackdriver-telemetry-architecture)
 - [Hugging Face Token Setup](#-hugging-face-token-setup)
 - [Quick Start Guide](#-quick-start-guide)
   - [Step 1 — Automated Environment Initialization](#step-1--automated-environment-initialization)
@@ -59,7 +64,7 @@
   - [6. High-Stress Failure Resilience (EXP12 & EXP13)](#6-high-stress-failure-resilience-exp12--exp13)
   - [7. Input Scaling Linearity & Memory Bound (EXP15)](#7-input-scaling-linearity--memory-bound-exp15)
 - [Configuration Reference](#-configuration-reference)
-- [Troubleshooting & FAQ](#-troubleshooting--faq)
+- [Troubleshooting & Diagnostics Guide](#-troubleshooting--diagnostics-guide)
 - [Contributing](#-contributing)
 - [License](#-license)
 
@@ -182,21 +187,221 @@ graph TB
 
 ---
 
-## 📋 System Prerequisites
+## 📋 System Requirements & Hardware Matrix
 
-Before installation, verify that the following tools are installed on your host machine:
+### 🖥️ Hardware Sizing Matrix
 
-| Requirement | Minimum Version | Notes |
+Echoflow executes state-of-the-art transformer models (Whisper Medium, IndicTrans2 1B, Pyannote 3.1, MMS, OpenVoice V2) 100% locally on CPU with zero cloud latency, zero external data leaks, and complete air-gapped data sovereignty. Review the hardware matrix below before deploying:
+
+<table>
+  <thead>
+    <tr style="background-color: #1e293b; color: #f8fafc;">
+      <th>Component</th>
+      <th>Minimum Specification</th>
+      <th>Recommended Specification</th>
+      <th>Architecture Role & Technical Details</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Processor (CPU)</strong></td>
+      <td>
+        <span style="color: #eab308; font-weight: bold;">Quad-Core (x86_64)</span><br/>
+        Intel Core i5 (8th Gen+) or AMD Ryzen 3000+
+      </td>
+      <td>
+        <span style="color: #22c55e; font-weight: bold;">Octa-Core+ (x86_64)</span><br/>
+        Intel Core i7/i9 (11th Gen+) or AMD Ryzen 5000+
+      </td>
+      <td>
+        <strong>Mandatory AVX2 & FMA instruction support</strong> for CTranslate2 quantization (int8) and Intel MKL vector dot products.
+      </td>
+    </tr>
+    <tr>
+      <td><strong>Physical RAM</strong></td>
+      <td>
+        <span style="color: #eab308; font-weight: bold;">8 GB DDR4</span><br/>
+        <em>Requires 16 GB Pagefile</em>
+      </td>
+      <td>
+        <span style="color: #22c55e; font-weight: bold;">16 GB – 32 GB DDR4/DDR5</span><br/>
+        Dual-channel memory recommended
+      </td>
+      <td>
+        Holds resident weights for Whisper Medium (~1.5 GB), IndicTrans2 1B (~2.2 GB), and active audio spectrogram tensors.
+      </td>
+    </tr>
+    <tr>
+      <td><strong>Virtual Memory (Pagefile)</strong></td>
+      <td>
+        <span style="color: #ef4444; font-weight: bold;">16 GB (16,384 MB)</span><br/>
+        <em>System pagefile setting</em>
+      </td>
+      <td>
+        <span style="color: #22c55e; font-weight: bold;">24 GB – 32 GB</span><br/>
+        Dynamic managed backing
+      </td>
+      <td>
+        Prevents CTranslate2/MKL crash (<code>mkl_malloc: failed to allocate memory</code>) during concurrent model boots and peak acoustic DSP runs.
+      </td>
+    </tr>
+    <tr>
+      <td><strong>Disk Storage</strong></td>
+      <td>
+        <span style="color: #eab308; font-weight: bold;">15 GB Free</span><br/>
+        Standard SATA SSD / HDD
+      </td>
+      <td>
+        <span style="color: #22c55e; font-weight: bold;">25 GB+ Free</span><br/>
+        NVMe M.2 SSD
+      </td>
+      <td>
+        Houses model weight garden (~9 GB), Python isolated virtual environments (~4.5 GB), and temporary media chunks.
+      </td>
+    </tr>
+    <tr>
+      <td><strong>Operating System</strong></td>
+      <td>
+        <span style="color: #3b82f6; font-weight: bold;">Windows 10 64-bit</span><br/>
+        Build 19041+
+      </td>
+      <td>
+        <span style="color: #3b82f6; font-weight: bold;">Windows 11 64-bit</span><br/>
+        Build 22000+ (or Ubuntu 22.04 LTS)
+      </td>
+      <td>
+        Native Windows WebView2 runtime container powered by Wails v2.
+      </td>
+    </tr>
+  </tbody>
+</table>
+
+---
+
+### 📦 Software Prerequisites
+
+Ensure the following runtimes and compilers are installed before running the environment initialization:
+
+| Tool | Required Version | Verification Command | Purpose |
+|---|---|---|---|
+| **Go** | `1.20+` (1.25 recommended) | `go version` | Compiles the native DAG engine, memory broker, and IPC supervisor |
+| **Node.js** | `18.x` or `20.x LTS` | `node -v` | Packages frontend HTML5, CSS, and Vanilla JS UI assets |
+| **Python 3.12** | `3.12.x 64-bit` | `py -3.12 --version` | Powers `env_core` (Faster-Whisper, IndicTrans2, SciPy acoustic DSP) |
+| **Python 3.10** | `3.10.x 64-bit` | `py -3.10 --version` | Powers `env_tts` (Pyannote 3.1 diarization, OpenVoice V2, MMS TTS) |
+| **Wails CLI** | `v2.9.x+` | `wails version` | Desktop application packager and IPC binding generator |
+| **Git** | `2.30+` | `git --version` | Manages project repositories and synchronizes domain dictionaries |
+| **Hugging Face Token** | Read Permission | Exported via `HF_TOKEN` | Required for authenticated download of gated Pyannote weights |
+
+> [!TIP]
+> **FFmpeg** is automatically fetched and placed into `bin/ffmpeg.exe` by `setup_script.py`. You do **not** need to install FFmpeg globally or configure your system PATH.
+
+---
+
+### 🛠️ Windows Pagefile (Virtual Memory) Configuration Guide
+
+> [!IMPORTANT]
+> **Critical Stability Requirement for 8 GB & 16 GB Machines**<br/>
+> When loading Faster-Whisper and IndicTrans2 simultaneously, the CTranslate2 and Intel MKL libraries reserve continuous virtual address space. If your Windows paging file is too small or restricted to default Windows dynamic sizing, MKL will immediately abort with:
+> <br/>
+> <code>❌ [WhisperTranscriber] Daemon crashed during boot: mkl_malloc: failed to allocate memory</code>
+> <br/>
+> Follow the steps below to expand your virtual memory to **16 GB minimum**.
+
+#### ⚡ Method A: Automated One-Line Setup (PowerShell Admin)
+
+Launch **PowerShell as Administrator** and execute:
+
+```powershell
+# Set C: drive Pagefile to 16,384 MB (Initial) and 24,576 MB (Maximum)
+$sys = Get-CimInstance Win32_ComputerSystem
+$sys | Set-CimInstance -Property @{AutomaticManagedPagefile = $false}
+$page = Get-CimInstance Win32_PageFileSetting | Where-Object { $_.Name -like "C:*" }
+if ($page) {
+    $page | Set-CimInstance -Property @{InitialSize = 16384; MaximumSize = 24576}
+} else {
+    New-CimInstance -ClassName Win32_PageFileSetting -Property @{Name = "C:\pagefile.sys"; InitialSize = 16384; MaximumSize = 24576}
+}
+Write-Host "✅ Virtual Memory configured successfully: 16 GB Initial / 24 GB Maximum." -ForegroundColor Green
+```
+
+#### 🖱️ Method B: Step-by-Step Graphical Setup (Windows GUI)
+
+1. Press <kbd>Win</kbd> + <kbd>R</kbd>, enter **`sysdm.cpl`**, and press <kbd>Enter</kbd>.
+2. In the **System Properties** dialog, switch to the **Advanced** tab.
+3. Under the **Performance** header, click **Settings...**.
+4. In the **Performance Options** dialog, switch to the **Advanced** tab.
+5. In the **Virtual memory** group, click **Change...**.
+6. **Uncheck** the checkbox: *"Automatically manage paging file size for all drives"*.
+7. Select your primary SSD drive (usually **`C:`**).
+8. Select the **Custom size** radio button and enter:
+   - **Initial size (MB)**: `16384` *(16 GB)*
+   - **Maximum size (MB)**: `24576` *(24 GB)*
+9. Click the **Set** button (critical step — do not omit!).
+10. Click **OK** on all dialogs and restart your PC when prompted.
+
+---
+
+### 👥 Collaborator Git Setup for Domain Dictionary
+
+Echoflow enables teams to collaboratively curate rural agricultural, medical, and regional vocabularies without Git merge conflicts or exposing unfinished drafts to other users.
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Collaborator Machine A                                     │
+│  shards/dict_DESKTOP-ABC.json (Private, .gitignore)         │
+│         │                                                   │
+│         ▼ (Click "Sync Local")                              │
+│  pipeline/config/domain_dictionary.json ────► origin/main   │
+│                                                     │       │
+│                                                     ▼       │
+│  Collaborator Machine B                      (Click "Sync   │
+│  shards/dict_LAPTOP-XYZ.json (Private)        Global")      │
+│         ▲                                           │       │
+│         └────────── Merged Dictionary ◄─────────────┘       │
+└─────────────────────────────────────────────────────────────┘
+```
+
+#### 1. Accept Collaborator Invitation
+The repository owner must add your GitHub username to the repository collaborators list.
+- Check your email or visit: **`https://github.com/<owner>/<repo>/invitations`**
+- Click **Accept Invitation**.
+
+#### 2. Configure Git Identity on your PC
+Ensure your Git CLI is configured with the email associated with your GitHub account:
+```cmd
+git config --global user.name "Your Full Name"
+git config --global user.email "your.github.email@example.com"
+```
+
+#### 3. Setup Authentication (PAT or Git Credential Manager)
+If your system reports `🔴 GitHub Auth Failed`:
+1. Generate a **Personal Access Token (Classic)** on GitHub:
+   - Go to [github.com/settings/tokens](https://github.com/settings/tokens)
+   - Click **Generate new token (classic)**
+   - Select scopes: **`repo`** (Full control of private repositories)
+   - Copy your generated token (`ghp_...`)
+2. Store your credentials in Windows Credential Manager or update the origin remote:
+   ```cmd
+   git remote set-url origin https://YOUR_TOKEN@github.com/<owner>/<repo>.git
+   ```
+
+#### 4. How Sync Works in the App
+- **Private Shards**: Every machine generates its own shard at `pipeline/config/shards/dict_<machine_id>.json`. This directory is **strictly gitignored** so your private drafts are never leaked or overwritten.
+- **Sync Local (Push)**: Merges your local terms into `domain_dictionary.json`, creates a Git commit, and pushes to GitHub. The UI displays the exact list of terms added and updated.
+- **Sync Global (Pull & Consolidate)**: Fetches the latest global dictionary from GitHub, merges any new vocabulary from team members into your local copy, and pushes any uncommitted local contributions.
+- **Offline Mode**: If you are working in rural areas without internet, clicking "Sync Local" commits your changes locally (`🟡 Pending Push`) and automatically defers pushing until you are back online.
+
+---
+
+### 📊 Logging & Stackdriver Telemetry Architecture
+
+Echoflow provides transparent, structured logging to monitor real-time pipeline progress, memory broker decisions, and system diagnostics:
+
+| Log Stream | Location | Retention & Features |
 |---|---|---|
-| **Go** | `1.20+` | Required for compiling the backend orchestrator |
-| **Node.js** | `18+` | Required by Wails CLI to bundle frontend assets |
-| **Python 3.12** | `3.12.x` | Used by `env_core` (Whisper, IndicTrans2, Signal DSP) |
-| **Python 3.10** | `3.10.x` | Used by `env_tts` (Pyannote 3.1, OpenVoice V2, MMS TTS) |
-| **Wails CLI** | `v2.9+` | Install with `go install github.com/wailsapp/wails/v2/cmd/wails@latest` |
-| **Hugging Face Token** | Read Token | Mandatory for downloading gated Pyannote diarization models |
-
-> [!NOTE]
-> **FFmpeg** is downloaded automatically as a static binary into `bin/ffmpeg.exe` by `setup_script.py`. You do **not** need to install FFmpeg globally.
+| **System & Global Stackdriver Logs** | `workspace/logs/stackdriver_YYYY-MM-DD.log` | Records application boot sequences, daemon worker lifecycle, Git dictionary sync events, and unhandled errors. |
+| **Job Execution Telemetry** | `workspace/jobs/<JOB-ID>/job_telemetry.log` | Records per-stage execution times, acoustic DSP statistics, Whisper chunk transcription speeds, and NMT beam search tokens. |
+| **In-App Log Manager & Pruning** | *Echoflow UI → Log Manager* | Displays active log disk footprint, monitors a **1 GB soft threshold**, and provides time-range deletion (**Days**, **Months**, **Years**) for automated maintenance. |
 
 ---
 
@@ -582,47 +787,130 @@ Defines component DAG nodes, dependencies, and environment mappings:
 
 ---
 
-## 🔍 Troubleshooting & FAQ
+## 🔍 Troubleshooting & Diagnostics Guide
+
+Review the diagnostic matrix below for immediate troubleshooting of common system, hardware, or network events:
+
+<details>
+<summary><strong>❌ "Daemon crashed during boot: mkl_malloc: failed to allocate memory"</strong></summary>
+<br/>
+
+- **Symptom**: During pipeline launch, `WhisperTranscriber` or `NMTTranslator` exits immediately with `mkl_malloc: failed to allocate memory` in the UI or Stackdriver logs.
+- **Root Cause**: Intel MKL (used by CTranslate2 and PyTorch) failed to reserve a contiguous block of virtual address space because host physical RAM is exhausted and the Windows paging file is undersized or disabled.
+- **Immediate Fix**:
+  1. Expand your Windows Pagefile to **16 GB Initial / 24 GB Maximum** following the [Windows Pagefile Guide](#windows-pagefile-virtual-memory-configuration-guide).
+  2. If running on an 8 GB laptop without pagefile expansion, toggle the job Quality Mode to **Fast** (uses `whisper-small` instead of `medium`).
+  3. Close browser tabs or background processes holding excessive RAM before starting batch jobs.
+
+</details>
+
+<details>
+<summary><strong>🔒 "The requested operation cannot be performed on a file with a user-mapped section open"</strong></summary>
+<br/>
+
+- **Symptom**: Domain Dictionary sync or compiler logs: `🔴 [SyncManager] Failed to update domain_dictionary.json: open ...: The requested operation cannot be performed on a file with a user-mapped section open.`
+- **Root Cause**: On Windows, files that are currently memory-mapped (`mmap`) or held open with exclusive locks by Python subprocesses cannot be truncated or overwritten directly.
+- **Resolution**:
+  - Echoflow now incorporates an automated atomic fallback (`safeWriteJSONFile`) with exponential backoff and temporary file swapping to bypass mapped section locks automatically.
+  - If you encounter this during manual script execution, ensure background daemon processes are gracefully terminated before manually editing dictionary files.
+
+</details>
+
+<details>
+<summary><strong>🔴 "🔴 GitHub Auth Failed" / "Git operation failed" during Dictionary Sync</strong></summary>
+<br/>
+
+- **Symptom**: Clicking **Sync Local** or **Sync Global** outputs `🔴 [SyncManager] 🔴 GitHub Auth Failed: Git operation failed`.
+- **Root Cause**:
+  1. You have not accepted the repository collaborator invite on GitHub.
+  2. Git for Windows does not have your GitHub credentials or your Personal Access Token has expired.
+- **Step-by-Step Fix**:
+  1. Visit **`https://github.com/<owner>/<repo>/invitations`** while logged into your GitHub account and accept the pending invitation.
+  2. Configure your Git credentials:
+     ```cmd
+     git config --global user.name "Your Name"
+     git config --global user.email "your.email@example.com"
+     ```
+  3. Generate a classic PAT with `repo` scope at [github.com/settings/tokens](https://github.com/settings/tokens).
+  4. Update the origin URL:
+     ```cmd
+     git remote set-url origin https://YOUR_TOKEN@github.com/<owner>/<repo>.git
+     ```
+
+</details>
+
+<details>
+<summary><strong>📡 "📡 [SyncManager] Offline: Local changes committed locally. Push deferred."</strong></summary>
+<br/>
+
+- **Explanation**: This is **expected behavior** when working in air-gapped or rural environments without active internet.
+- **What Happens**:
+  - Your dictionary changes are safely committed to your local Git branch (`🟡 Pending Push`).
+  - No work is lost.
+  - As soon as your laptop reconnects to Wi-Fi/Ethernet, clicking either **Sync Local** or **Sync Global** will automatically push all queued offline commits to GitHub in a single batch.
+
+</details>
+
+<details>
+<summary><strong>🔄 "🔄 [Auto-Recovery] Retrying crashed CPU task (Attempt N/3)"</strong></summary>
+<br/>
+
+- **Symptom**: A yellow warning banner appears during DAG execution indicating an auto-recovery retry.
+- **Explanation**: Echoflow features self-healing task execution. If a transient CPU worker is interrupted (e.g. system sleep, sudden memory pressure, or external file handle interrupt), the Go DAG executor catches the exit signal, cleans up partial chunk artifacts, and automatically retries up to 3 times before declaring a node failure.
+
+</details>
 
 <details>
 <summary><strong>❌ "Local Whisper model missing at models/whisper-medium"</strong></summary>
+<br/>
 
-The setup script did not complete model weight downloads. Run:
-```cmd
-.envs\env_core\Scripts\python.exe setup_script.py
-```
-Ensure your internet connection is active during setup.
+- **Cause**: The setup script did not complete model weight downloads or was interrupted.
+- **Fix**: Re-run the automated setup script:
+  ```cmd
+  .envs\env_core\Scripts\python.exe setup_script.py
+  ```
+  Verify that `models/whisper-medium/` contains `model.bin`, `vocabulary.json`, and `config.json`.
 
 </details>
 
 <details>
 <summary><strong>❌ "Cannot access gated repo" on Pyannote diarization</strong></summary>
+<br/>
 
-You must accept user conditions on Hugging Face and export your token:
-1. Accept terms on [pyannote/speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1).
-2. Set `HF_TOKEN` in your terminal and re-run `python setup_script.py`.
+- **Cause**: Pyannote models require accepting user agreements on Hugging Face before weight download.
+- **Fix**:
+  1. Accept user terms on [pyannote/speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1) and [pyannote/segmentation-3.0](https://huggingface.co/pyannote/segmentation-3.0).
+  2. Set `HF_TOKEN` in your environment:
+     ```cmd
+     set HF_TOKEN=hf_your_token_here
+     ```
+  3. Re-run `python setup_script.py`.
 
 </details>
 
 <details>
 <summary><strong>⚠️ Customizing the System RAM Ceiling</strong></summary>
+<br/>
 
-To adjust the global memory ceiling:
-1. Edit `main.go` and update the first argument in `broker.NewMemoryManager(5000.0, ...)`.
-2. Recompile using `wails build`.
+- **Use Case**: On systems with 8 GB physical RAM, you can lower the memory manager ceiling to ensure background processes don't trigger Windows paging:
+  1. Open `main.go`.
+  2. Modify the first argument in `broker.NewMemoryManager(4500.0, ...)`.
+  3. Rebuild the application binary via `wails build`.
 
 </details>
 
 <details>
 <summary><strong>❓ How do I add new regional terms to the dictionary?</strong></summary>
+<br/>
 
-You can either:
-- Open the **Domain Dictionary** button in the desktop UI and add an entry directly.
-- Or use `dict_manager.py`:
-```python
-from pipeline.config.dict_manager import add_dynamic_stem
-add_dynamic_stem("लसीकरण", ["लसिकरण", "क्लषिकरन", "लछी करन"])
-```
+You can curate and expand the dictionary via:
+1. **Desktop UI**: Open the **Domain Dictionary** view, type the source phonetic variation and canonical word, and click **Save Term**.
+2. **Post-Job Candidate Harvest**: After each job completes, review harvested technical candidates in the Operator View and click **Approve** to incorporate them.
+3. **Python Script**:
+   ```python
+   from pipeline.config.dict_manager import add_dynamic_stem
+   add_dynamic_stem("लसीकरण", ["लसिकरण", "क्लषिकरन", "लछी करन"])
+   ```
 
 </details>
 

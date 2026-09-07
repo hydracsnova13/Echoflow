@@ -581,16 +581,30 @@ func (m *MemoryManager) spawnWorkerDynamic(comp string, meta PipelineComponent) 
 	} else {
 		bootErrMu.Lock()
 		numErrs := len(bootErrLines)
-		var lastErr string
+		var combinedErr string
 		if numErrs > 0 {
-			lastErr = bootErrLines[numErrs-1]
+			if numErrs <= 3 {
+				combinedErr = strings.Join(bootErrLines, " | ")
+			} else {
+				combinedErr = strings.Join(bootErrLines[numErrs-3:], " | ")
+			}
 		}
 		bootErrMu.Unlock()
 
-		if lastErr != "" {
-			m.LogToUI(fmt.Sprintf("❌ [%s] Daemon crashed during boot: %s", comp, lastErr))
+		if combinedErr != "" {
+			combinedLower := strings.ToLower(combinedErr)
+			if strings.Contains(combinedLower, "mkl_malloc") || strings.Contains(combinedLower, "allocate memory") ||
+				strings.Contains(combinedLower, "memoryerror") || strings.Contains(combinedLower, "bad_alloc") {
+				m.LogToUI(fmt.Sprintf("❌ [%s] Out of Memory crash during boot: %s. Tip: Expand Windows Pagefile / Virtual Memory (min 16GB) or switch to Fast quality mode.", comp, combinedErr))
+			} else if strings.Contains(combinedLower, "cuda") {
+				m.LogToUI(fmt.Sprintf("❌ [%s] GPU/CUDA crash during boot: %s. Tip: Check NVIDIA GPU drivers or switch device mode to CPU.", comp, combinedErr))
+			} else if strings.Contains(combinedLower, "modulenotfounderror") || strings.Contains(combinedLower, "no module named") {
+				m.LogToUI(fmt.Sprintf("❌ [%s] Missing Python dependency: %s. Tip: Run pip install -r requirements.txt in the project environment.", comp, combinedErr))
+			} else {
+				m.LogToUI(fmt.Sprintf("❌ [%s] Daemon crashed during boot: %s", comp, combinedErr))
+			}
 		} else {
-			m.LogToUI(fmt.Sprintf("❌ [%s] Daemon failed to send valid handshake (no response from process).", comp))
+			m.LogToUI(fmt.Sprintf("❌ [%s] Daemon failed to send valid handshake (process exited without response). Tip: Check RAM availability and Python environment.", comp))
 		}
 	}
 
@@ -868,24 +882,25 @@ func (m *MemoryManager) StartTelemetryEmitter(ctx context.Context) {
 			snap.GlobalTasks = make(map[string]string)
 			if m.Checkpoints != nil {
 				m.Checkpoints.mu.RLock()
-				var latestJob string
-				for id := range m.Checkpoints.ActiveJobs {
-					if id > latestJob {
-						latestJob = id
-					}
-				}
-				if latestJob != "" {
-					job := m.Checkpoints.ActiveJobs[latestJob]
+				var activeJob *JobManifest
+				for _, job := range m.Checkpoints.ActiveJobs {
 					job.Mu.Lock()
-					snap.ActiveJobID = latestJob
-					snap.JobStatus = string(job.Status)
-					for k, v := range job.GlobalTasks {
-						snap.GlobalTasks[k] = string(v)
-					}
-					if job.Status == "COMPLETED" {
-						snap.JobComplete = true
+					if job.Status == JobRunning || job.Status == JobPaused {
+						if activeJob == nil || job.JobID > activeJob.JobID {
+							activeJob = job
+						}
 					}
 					job.Mu.Unlock()
+				}
+				if activeJob != nil {
+					activeJob.Mu.Lock()
+					snap.ActiveJobID = activeJob.JobID
+					snap.JobStatus = string(activeJob.Status)
+					for k, v := range activeJob.GlobalTasks {
+						snap.GlobalTasks[k] = string(v)
+					}
+					snap.JobComplete = false
+					activeJob.Mu.Unlock()
 				}
 				m.Checkpoints.mu.RUnlock()
 			}

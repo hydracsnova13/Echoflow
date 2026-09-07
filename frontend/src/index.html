@@ -1321,7 +1321,7 @@
                 <div class="op-kpi-label" style="margin-bottom: 12px;">Job Injection Gateway</div>
                 <div class="gateway-container">
                     <input type="text" id="targetPathOp" placeholder="Absolute Input Path (.mp4, .wav, .txt)"
-                        oninput="syncInputs()">
+                        oninput="syncInputs()" onchange="syncInputs()" onpaste="setTimeout(syncInputs, 0)">
                     <div class="gateway-controls">
                         <select id="sourceLangOp" onchange="syncInputs()">
                             <option value="" selected>Auto Detect</option>
@@ -1447,7 +1447,7 @@
                 <div class="card-body" style="display: flex; align-items: center;">
                     <div class="gateway-container">
                         <input type="text" id="targetPath" placeholder="Absolute Input Path (.mp4, .wav, .txt)"
-                            oninput="syncInputs()">
+                            oninput="syncInputs()" onchange="syncInputs()" onpaste="setTimeout(syncInputs, 0)">
                         <div class="gateway-controls">
                             <select id="sourceLang" onchange="syncInputs()">
                                 <option value="" selected>Auto Detect</option>
@@ -2160,14 +2160,20 @@
             let cleanPath = rawPath.replace(/['"]/g, '').trim();
             applyRegexRules(cleanPath);
 
-            if (!cleanPath.startsWith("JOB-") && cleanPath !== currentJobId) {
+            if (!cleanPath.startsWith("JOB-")) {
                 currentJobId = null;
                 updateButtonStates('idle');
                 document.querySelectorAll('.sys-node, .dag-node, .op-step').forEach(el => el.classList.remove('active', 'done'));
                 document.querySelectorAll('.dag-edge, .op-line').forEach(el => el.classList.remove('active'));
-                document.getElementById("opStatusTitle").innerText = "System Ready";
-                document.getElementById("opStatusTitle").style.color = "var(--text-main)";
-                document.getElementById("opMediaPlayer").style.display = "none";
+                const stTitle = document.getElementById("opStatusTitle");
+                if (stTitle) {
+                    stTitle.innerText = "System Ready";
+                    stTitle.style.color = "var(--text-main)";
+                }
+                const player = document.getElementById("opMediaPlayer");
+                if (player) player.style.display = "none";
+                const mediaBox = document.getElementById("mediaContainer");
+                if (mediaBox) mediaBox.innerHTML = "";
                 currentRenderedJob = null;
             }
 
@@ -2248,8 +2254,23 @@
             if (!jobId || !status) return;
             const upperStatus = status.toUpperCase();
 
+            // Guard: If user has an input media path entered, do NOT hijack UI with background/completed jobs
+            const isOp = document.getElementById('modeSwitch') ? document.getElementById('modeSwitch').checked : false;
+            const currentPath = isOp ? (document.getElementById('targetPathOp') ? document.getElementById('targetPathOp').value.trim() : '') : (document.getElementById('targetPath') ? document.getElementById('targetPath').value.trim() : '');
+            const cleanPath = currentPath.replace(/['"]/g, '').trim();
+            const hasInputPath = (cleanPath !== '' && !cleanPath.startsWith("JOB-"));
+
+            if (hasInputPath) {
+                // User is preparing a new job input path. Never hijack or autoplay old job output!
+                return;
+            }
+
             if (!currentJobId) {
-                currentJobId = jobId;
+                if (upperStatus === "RUNNING") {
+                    currentJobId = jobId;
+                } else {
+                    return;
+                }
             }
 
             if (currentJobId !== jobId) return;
@@ -2600,11 +2621,6 @@
                 lastRenderedJobsJson = jobsJson;
                 lastSelectedJobId = currentJobId;
 
-                if (!currentJobId && jobs.length > 0) {
-                    currentJobId = jobs[0].id;
-                    handleJobStatusUpdate(jobs[0].id, jobs[0].status);
-                }
-
                 let rjHtml = "";
                 jobs.forEach((job, idx) => {
                     let stClass = (job.status || "UNKNOWN").toLowerCase();
@@ -2861,12 +2877,17 @@
             logBox.innerHTML = logHtml;
             if (isScrolledToBottom) logBox.scrollTop = logBox.scrollHeight;
 
-            if (data.active_job_id && (data.job_status || data.job_complete)) {
+            const isOp = document.getElementById('modeSwitch') ? document.getElementById('modeSwitch').checked : false;
+            const currentPath = isOp ? (document.getElementById('targetPathOp') ? document.getElementById('targetPathOp').value.trim() : '') : (document.getElementById('targetPath') ? document.getElementById('targetPath').value.trim() : '');
+            const cleanPath = currentPath.replace(/['"]/g, '').trim();
+            const hasInputPath = (cleanPath !== '' && !cleanPath.startsWith("JOB-"));
+
+            if (!hasInputPath && data.active_job_id && (data.job_status || data.job_complete)) {
                 let st = data.job_status || (data.job_complete ? "COMPLETED" : "RUNNING");
                 handleJobStatusUpdate(data.active_job_id, st);
             }
 
-            if (data.job_complete) {
+            if (!hasInputPath && data.job_complete && data.active_job_id && currentJobId === data.active_job_id) {
                 if (window.dynamicComps) {
                     dynamicComps.forEach((comp) => {
                         let node = document.getElementById('node-' + comp);
@@ -2876,7 +2897,7 @@
                 document.querySelectorAll('.dag-edge').forEach(edge => {
                     edge.className = 'dag-edge done';
                 });
-            } else if (data.global_tasks) {
+            } else if (!hasInputPath && data.global_tasks && data.active_job_id && currentJobId === data.active_job_id) {
                 let anyActive = false;
                 dynamicComps.forEach((comp) => {
                     let node = document.getElementById('node-' + comp);

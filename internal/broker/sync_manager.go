@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -37,6 +38,30 @@ func NewGitSyncManager(root string) *GitSyncManager {
 	}
 }
 
+// safeWriteJSONFile writes data to a file with retry and atomic temporary file fallback to bypass Windows user-mapped section locks
+func safeWriteJSONFile(filePath string, data []byte) error {
+	var lastErr error
+	for i := 0; i < 10; i++ {
+		err := os.WriteFile(filePath, data, 0644)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+
+		// Attempt atomic temporary replacement if file has a mapped section open
+		tmpPath := filePath + fmt.Sprintf(".tmp_%d", time.Now().UnixNano())
+		if tmpErr := os.WriteFile(tmpPath, data, 0644); tmpErr == nil {
+			if renErr := os.Rename(tmpPath, filePath); renErr == nil {
+				return nil
+			}
+			os.Remove(tmpPath)
+		}
+
+		time.Sleep(120 * time.Millisecond)
+	}
+	return lastErr
+}
+
 func parseGitError(output string, err error) (bool, string) {
 	lower := strings.ToLower(output)
 	if strings.Contains(lower, "could not read username") ||
@@ -48,8 +73,9 @@ func parseGitError(output string, err error) (bool, string) {
 		strings.Contains(lower, "access denied") ||
 		strings.Contains(lower, "not authorized") ||
 		strings.Contains(lower, "repository not found") ||
+		strings.Contains(lower, "403") ||
 		strings.Contains(lower, "logon failed") {
-		return true, "GitHub Login / Auth Failed (Check GitHub Credentials/Token)"
+		return true, "GitHub Authentication Failed. Please verify that: (1) You have accepted the collaborator invitation on GitHub; (2) Your GitHub Personal Access Token (PAT with repo scope) or Git Credential Manager is configured."
 	}
 
 	for _, line := range strings.Split(output, "\n") {
@@ -111,13 +137,25 @@ func (gsm *GitSyncManager) GetStatus() string {
 }
 
 func (gsm *GitSyncManager) isOnline() bool {
-	client := http.Client{Timeout: 3 * time.Second}
+	// Step 1: Check GitHub HTTP endpoint with generous 8s timeout
+	client := http.Client{Timeout: 8 * time.Second}
 	resp, err := client.Get("https://github.com")
-	if err != nil {
-		return false
+	if err == nil {
+		defer resp.Body.Close()
+		if resp.StatusCode >= 200 && resp.StatusCode < 500 {
+			return true
+		}
 	}
-	defer resp.Body.Close()
-	return resp.StatusCode >= 200
+
+	// Step 2: Fallback check — test git connectivity directly to origin
+	cmd := exec.Command("git", "-C", gsm.ProjectRoot, "ls-remote", "--exit-code", "-h", "origin", "HEAD")
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	if err := cmd.Run(); err == nil {
+		return true
+	}
+
+	return false
 }
 
 func (gsm *GitSyncManager) clearGitLock() {
@@ -417,7 +455,7 @@ func (gsm *GitSyncManager) CompileDictionary(logToUI func(string)) error {
 		return err
 	}
 
-	if err := os.WriteFile(basePath, compiledBytes, 0644); err != nil {
+	if err := safeWriteJSONFile(basePath, compiledBytes); err != nil {
 		if logToUI != nil {
 			logToUI(fmt.Sprintf("🔴 [SyncManager] Failed to write compiled dictionary: %s", err))
 		}
@@ -465,13 +503,25 @@ func (gsm *GitSyncManager) fetchRemoteConfigSync(machineID string, logToUI func(
 		return fmt.Errorf("%s", gsm.LastError)
 	}
 
-	// 2. Checkout remote domain_dictionary.json
+	// 2. Fast-forward local branch to origin/main if we have no unpushed commits
+	cmdAhead := exec.Command("git", "-C", gsm.ProjectRoot, "rev-list", "--count", "origin/main..HEAD")
+	cmdAhead.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	if aheadOut, aheadErr := cmdAhead.Output(); aheadErr == nil {
+		aheadCount, _ := strconv.Atoi(strings.TrimSpace(string(aheadOut)))
+		if aheadCount == 0 {
+			cmdFF := exec.Command("git", "-C", gsm.ProjectRoot, "merge", "--ff-only", "origin/main")
+			cmdFF.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+			cmdFF.CombinedOutput()
+		}
+	}
+
+	// 3. Checkout remote domain_dictionary.json
 	dictRelPath := filepath.Join("pipeline", "config", "domain_dictionary.json")
 	cmdCheckoutDict := exec.Command("git", "-C", gsm.ProjectRoot, "checkout", "origin/main", "--", dictRelPath)
 	cmdCheckoutDict.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	cmdCheckoutDict.CombinedOutput()
 
-	// 3. Unstage pipeline/config so nothing is left staged in git index
+	// 4. Unstage pipeline/config so nothing is left staged in git index
 	cmdReset := exec.Command("git", "-C", gsm.ProjectRoot, "reset", "HEAD", "--", "pipeline/config")
 	cmdReset.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	cmdReset.CombinedOutput()
@@ -520,7 +570,21 @@ func (gsm *GitSyncManager) SyncLocal(machineID string, logToUI func(string)) (st
 		return msg, err
 	}
 
-	// 2. Read existing domain_dictionary.json
+	// 2. Read baseline domain_dictionary.json from Git HEAD for accurate diffing
+	cmdShow := exec.Command("git", "-C", gsm.ProjectRoot, "show", "HEAD:pipeline/config/domain_dictionary.json")
+	cmdShow.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	var gitHeadDict compiledDictShard
+	if headBytes, err := cmdShow.Output(); err == nil {
+		json.Unmarshal(headBytes, &gitHeadDict)
+	}
+	if gitHeadDict.AsrCorrections == nil {
+		gitHeadDict.AsrCorrections = make(map[string]string)
+	}
+	if gitHeadDict.DomainTerms == nil {
+		gitHeadDict.DomainTerms = make(map[string]string)
+	}
+
+	// Also read existing domain_dictionary.json from disk to avoid losing any offline compiled changes
 	var currentDict compiledDictShard
 	if dictBytes, err := os.ReadFile(dictAbsPath); err == nil {
 		json.Unmarshal(dictBytes, &currentDict)
@@ -532,12 +596,7 @@ func (gsm *GitSyncManager) SyncLocal(machineID string, logToUI func(string)) (st
 		currentDict.DomainTerms = make(map[string]string)
 	}
 
-	// Clone currentDict as preMerge base for diffing
-	var preMergeDict compiledDictShard
-	preMergeBytes, _ := json.Marshal(currentDict)
-	json.Unmarshal(preMergeBytes, &preMergeDict)
-
-	// 3. Overlay local shard changes into domain_dictionary.json
+	// 3. Overlay local shard changes into currentDict
 	for k, v := range localShard.AsrCorrections {
 		currentDict.AsrCorrections[k] = v
 	}
@@ -557,7 +616,7 @@ func (gsm *GitSyncManager) SyncLocal(machineID string, logToUI func(string)) (st
 		currentDict.SpokenMarathiSmoothing = append(currentDict.SpokenMarathiSmoothing, localShard.SpokenMarathiSmoothing...)
 	}
 
-	// Deduplicate before writing
+	// Deduplicate before saving
 	currentDict.AsrCorrections = deduplicateMap(currentDict.AsrCorrections)
 	currentDict.DomainTerms = deduplicateMap(currentDict.DomainTerms)
 	currentDict.AsrStemPatterns = deduplicatePatterns(currentDict.AsrStemPatterns)
@@ -565,11 +624,11 @@ func (gsm *GitSyncManager) SyncLocal(machineID string, logToUI func(string)) (st
 	currentDict.SpokenHindiSmoothing = deduplicatePatterns(currentDict.SpokenHindiSmoothing)
 	currentDict.SpokenMarathiSmoothing = deduplicatePatterns(currentDict.SpokenMarathiSmoothing)
 
-	// Compute diff between preMergeDict and currentDict
-	diff := computeDictDiff(preMergeDict, currentDict)
+	// Compute diff against Git HEAD to know exactly what is new compared to the committed state
+	diff := computeDictDiff(gitHeadDict, currentDict)
 
 	updatedDictBytes, _ := json.MarshalIndent(currentDict, "", "  ")
-	if err := os.WriteFile(dictAbsPath, updatedDictBytes, 0644); err != nil {
+	if err := safeWriteJSONFile(dictAbsPath, updatedDictBytes); err != nil {
 		msg := fmt.Sprintf("Failed to update domain_dictionary.json: %v", err)
 		if logToUI != nil {
 			logToUI("🔴 [SyncManager] " + msg)
@@ -581,18 +640,7 @@ func (gsm *GitSyncManager) SyncLocal(machineID string, logToUI func(string)) (st
 		return msg, err
 	}
 
-	if logToUI != nil {
-		if diff.TotalChanges() > 0 {
-			logToUI(fmt.Sprintf("📖 [SyncManager] Local changes merged into Global Domain Dictionary (%s):", diff.Summary()))
-			for _, line := range diff.DetailedLogLines() {
-				logToUI("   " + line)
-			}
-		} else {
-			logToUI("ℹ️ [SyncManager] Global Domain Dictionary already contains all terms from your local shard (0 changes).")
-		}
-	}
-
-	// 4. Git operations: Stage and commit ONLY domain_dictionary.json (shard is gitignored)
+	// 4. Git operations: Stage and commit ONLY domain_dictionary.json
 	gsm.clearGitLock()
 
 	// Unstage any other files in git index
@@ -600,31 +648,61 @@ func (gsm *GitSyncManager) SyncLocal(machineID string, logToUI func(string)) (st
 	cmdResetIndex.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	cmdResetIndex.CombinedOutput()
 
-	// Stage ONLY domain_dictionary.json
-	cmdAdd := exec.Command("git", "-C", gsm.ProjectRoot, "add", "--", dictRelPath)
-	cmdAdd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	if out, err := cmdAdd.CombinedOutput(); err != nil && logToUI != nil {
-		logToUI(fmt.Sprintf("🟡 [SyncManager] Git Add Note: %s", string(out)))
+	// Check if domain_dictionary.json has working tree changes
+	cmdStatus := exec.Command("git", "-C", gsm.ProjectRoot, "status", "--porcelain", "--", dictRelPath)
+	cmdStatus.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	statusOut, _ := cmdStatus.Output()
+	hasWorkingTreeChanges := strings.TrimSpace(string(statusOut)) != ""
+
+	committedJustNow := false
+	if hasWorkingTreeChanges {
+		cmdAdd := exec.Command("git", "-C", gsm.ProjectRoot, "add", "--", dictRelPath)
+		cmdAdd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+		if out, err := cmdAdd.CombinedOutput(); err != nil && logToUI != nil {
+			logToUI(fmt.Sprintf("🟡 [SyncManager] Git Add Note: %s", string(out)))
+		}
+
+		commitMsg := fmt.Sprintf("Update domain dictionary: %s (%s)", diff.Summary(), machineID)
+		cmdCommit := exec.Command("git", "-C", gsm.ProjectRoot, "commit", "-m", commitMsg, "--", dictRelPath)
+		cmdCommit.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+		if _, commitErr := cmdCommit.CombinedOutput(); commitErr == nil {
+			committedJustNow = true
+		}
 	}
 
-	// Commit ONLY domain_dictionary.json
-	commitMsg := fmt.Sprintf("Update domain dictionary: %s (%s)", diff.Summary(), machineID)
-	cmdCommit := exec.Command("git", "-C", gsm.ProjectRoot, "commit", "-m", commitMsg, "--", dictRelPath)
-	cmdCommit.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	cmdCommit.CombinedOutput()
+	// Check unpushed commits count
+	aheadCount := 0
+	cmdAheadCheck := exec.Command("git", "-C", gsm.ProjectRoot, "rev-list", "--count", "origin/main..HEAD")
+	cmdAheadCheck.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	if aheadOut, aheadErr := cmdAheadCheck.Output(); aheadErr == nil {
+		aheadCount, _ = strconv.Atoi(strings.TrimSpace(string(aheadOut)))
+	}
 
+	// 5. If no new commit was created and no unpushed commits exist, we are fully up to date
+	if aheadCount == 0 && !committedJustNow {
+		gsm.mu.Lock()
+		gsm.Status = SyncOnline
+		gsm.LastError = ""
+		gsm.mu.Unlock()
+		if logToUI != nil {
+			logToUI("ℹ️ [SyncManager] Global Domain Dictionary already contains all terms from your local shard and is in sync with GitHub (0 changes).")
+		}
+		return "Global Domain Dictionary is already up-to-date with GitHub and local shard (0 changes).", nil
+	}
+
+	// 6. If offline, defer push
 	if !gsm.isOnline() {
 		gsm.mu.Lock()
 		gsm.Status = SyncPending
-		gsm.LastError = "System is offline. Committed locally."
+		gsm.LastError = "System is offline. Changes committed locally; push deferred."
 		gsm.mu.Unlock()
 		if logToUI != nil {
-			logToUI("📡 [SyncManager] Offline: Local changes committed to domain_dictionary.json locally. Push deferred.")
+			logToUI(fmt.Sprintf("📡 [SyncManager] Offline: Local changes committed locally (%d commit(s) pending). Push deferred until internet is available.", aheadCount))
 		}
-		return fmt.Sprintf("Committed locally (Offline): %s", diff.Summary()), nil
+		return fmt.Sprintf("Committed locally (Offline - %d pending push): %s", aheadCount, diff.Summary()), nil
 	}
 
-	// Push commit to GitHub origin/main with GIT_TERMINAL_PROMPT=0
+	// 7. Push commit to GitHub origin/main with GIT_TERMINAL_PROMPT=0
 	cmdPush := exec.Command("git", "-C", gsm.ProjectRoot, "push", "origin", "main")
 	cmdPush.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	cmdPush.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
@@ -638,7 +716,8 @@ func (gsm *GitSyncManager) SyncLocal(machineID string, logToUI func(string)) (st
 			gsm.LastError = authErrMsg
 			gsm.mu.Unlock()
 			if logToUI != nil {
-				logToUI(fmt.Sprintf("🔴 [SyncManager] %s: %s", gsm.Status, string(pushOut)))
+				logToUI(fmt.Sprintf("🔴 [SyncManager] %s: %s", gsm.Status, authErrMsg))
+				logToUI("💡 [SyncManager] Tip: Ask the repo owner to add you as a collaborator, accept the invite on GitHub, or check your Personal Access Token.")
 			}
 			return authErrMsg, fmt.Errorf("%s", authErrMsg)
 		}
@@ -694,21 +773,22 @@ func (gsm *GitSyncManager) SyncLocal(machineID string, logToUI func(string)) (st
 	gsm.Status = SyncOnline
 	gsm.LastError = ""
 	gsm.mu.Unlock()
+
+	pushSummary := diff.Summary()
+	if diff.TotalChanges() == 0 && aheadCount > 0 {
+		pushSummary = fmt.Sprintf("%d previously deferred commit(s)", aheadCount)
+	}
+
 	if logToUI != nil {
-		if diff.TotalChanges() > 0 {
-			logToUI(fmt.Sprintf("🌐 [SyncManager] Successfully pushed to GitHub Global Domain Dictionary (%s)!", diff.Summary()))
-		} else {
-			logToUI("🌐 [SyncManager] Pushed to GitHub: Global Domain Dictionary is up-to-date with origin/main.")
+		logToUI(fmt.Sprintf("🌐 [SyncManager] Successfully pushed to GitHub Global Domain Dictionary (%s)!", pushSummary))
+		for _, line := range diff.DetailedLogLines() {
+			logToUI("   " + line)
 		}
 	}
 
 	var responseParts []string
-	if diff.TotalChanges() > 0 {
-		responseParts = append(responseParts, fmt.Sprintf("Pushed to GitHub: %s", diff.Summary()))
-		responseParts = append(responseParts, diff.DetailedLogLines()...)
-	} else {
-		responseParts = append(responseParts, "Global Domain Dictionary is up-to-date with your local shard (0 changes).")
-	}
+	responseParts = append(responseParts, fmt.Sprintf("Successfully pushed to GitHub: %s", pushSummary))
+	responseParts = append(responseParts, diff.DetailedLogLines()...)
 	return strings.Join(responseParts, "\n"), nil
 }
 
@@ -814,9 +894,9 @@ func (gsm *GitSyncManager) SyncGlobal(logToUI func(string)) (string, error) {
 	// Compute what local shard contributed that was NOT already in remoteDict
 	pushedDiff := computeDictDiff(remoteDict, mergedDict)
 
-	// 5. Write final dictionary to disk
+	// 5. Write final dictionary to disk safely
 	updatedDictBytes, _ := json.MarshalIndent(mergedDict, "", "  ")
-	if err := os.WriteFile(dictAbsPath, updatedDictBytes, 0644); err != nil {
+	if err := safeWriteJSONFile(dictAbsPath, updatedDictBytes); err != nil {
 		msg := fmt.Sprintf("Failed to update domain_dictionary.json: %v", err)
 		if logToUI != nil {
 			logToUI("🔴 [SyncManager] " + msg)
@@ -828,11 +908,16 @@ func (gsm *GitSyncManager) SyncGlobal(logToUI func(string)) (string, error) {
 		return msg, err
 	}
 
-	// 6. If local shard had new contributions to push, commit and push them!
-	if pushedDiff.TotalChanges() > 0 {
-		gsm.clearGitLock()
+	// 6. Stage and commit if working tree has changes
+	gsm.clearGitLock()
 
-		cmdAdd := exec.Command("git", "-C", gsm.ProjectRoot, "add", dictRelPath)
+	cmdStatus := exec.Command("git", "-C", gsm.ProjectRoot, "status", "--porcelain", "--", dictRelPath)
+	cmdStatus.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	statusOut, _ := cmdStatus.Output()
+	hasChanges := strings.TrimSpace(string(statusOut)) != ""
+
+	if hasChanges {
+		cmdAdd := exec.Command("git", "-C", gsm.ProjectRoot, "add", "--", dictRelPath)
 		cmdAdd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 		cmdAdd.CombinedOutput()
 
@@ -840,7 +925,17 @@ func (gsm *GitSyncManager) SyncGlobal(logToUI func(string)) (string, error) {
 		cmdCommit := exec.Command("git", "-C", gsm.ProjectRoot, "commit", "-m", commitMsg, "--", dictRelPath)
 		cmdCommit.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 		cmdCommit.CombinedOutput()
+	}
 
+	// Check if there are any unpushed commits
+	cmdAhead := exec.Command("git", "-C", gsm.ProjectRoot, "rev-list", "--count", "origin/main..HEAD")
+	cmdAhead.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	aheadCount := 0
+	if aheadOut, aheadErr := cmdAhead.Output(); aheadErr == nil {
+		aheadCount, _ = strconv.Atoi(strings.TrimSpace(string(aheadOut)))
+	}
+
+	if aheadCount > 0 {
 		cmdPush := exec.Command("git", "-C", gsm.ProjectRoot, "push", "origin", "main")
 		cmdPush.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 		cmdPush.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
@@ -854,7 +949,8 @@ func (gsm *GitSyncManager) SyncGlobal(logToUI func(string)) (string, error) {
 				gsm.LastError = authErrMsg
 				gsm.mu.Unlock()
 				if logToUI != nil {
-					logToUI(fmt.Sprintf("🔴 [SyncManager] %s: %s", gsm.Status, string(pushOut)))
+					logToUI(fmt.Sprintf("🔴 [SyncManager] %s: %s", gsm.Status, authErrMsg))
+					logToUI("💡 [SyncManager] Tip: Ask the repo owner to add you as a collaborator, accept the invite on GitHub, or check your Personal Access Token.")
 				}
 				return authErrMsg, fmt.Errorf("%s", authErrMsg)
 			}
@@ -864,7 +960,24 @@ func (gsm *GitSyncManager) SyncGlobal(logToUI func(string)) (string, error) {
 			cmdRebase := exec.Command("git", "-C", gsm.ProjectRoot, "pull", "--autostash", "--rebase", "origin", "main")
 			cmdRebase.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 			cmdRebase.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-			cmdRebase.CombinedOutput()
+			rebaseOut, rebaseErr := cmdRebase.CombinedOutput()
+
+			if rebaseErr != nil {
+				isAuthRebase, rebaseErrMsg := parseGitError(string(rebaseOut), rebaseErr)
+				gsm.mu.Lock()
+				if isAuthRebase {
+					gsm.Status = SyncAuthError
+					gsm.LastError = rebaseErrMsg
+				} else {
+					gsm.Status = SyncError
+					gsm.LastError = rebaseErrMsg
+				}
+				gsm.mu.Unlock()
+				if logToUI != nil {
+					logToUI(fmt.Sprintf("🔴 [SyncManager] Git Rebase Error: %s", string(rebaseOut)))
+				}
+				return gsm.LastError, rebaseErr
+			}
 
 			cmdPushRetry := exec.Command("git", "-C", gsm.ProjectRoot, "push", "origin", "main")
 			cmdPushRetry.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
@@ -889,8 +1002,13 @@ func (gsm *GitSyncManager) SyncGlobal(logToUI func(string)) (string, error) {
 			}
 		}
 
+		pushSummary := pushedDiff.Summary()
+		if pushedDiff.TotalChanges() == 0 {
+			pushSummary = fmt.Sprintf("%d unpushed commit(s)", aheadCount)
+		}
+
 		if logToUI != nil {
-			logToUI(fmt.Sprintf("📤 [SyncManager] Pushed local contributions to GitHub Global Domain Dictionary (%s):", pushedDiff.Summary()))
+			logToUI(fmt.Sprintf("📤 [SyncManager] Successfully pushed to GitHub Global Domain Dictionary (%s)!", pushSummary))
 			for _, line := range pushedDiff.DetailedLogLines() {
 				logToUI("   " + line)
 			}
@@ -908,13 +1026,13 @@ func (gsm *GitSyncManager) SyncGlobal(logToUI func(string)) (string, error) {
 
 	// Build human-readable changelog response
 	var responseParts []string
-	if pulledDiff.TotalChanges() > 0 && pushedDiff.TotalChanges() > 0 {
+	if pulledDiff.TotalChanges() > 0 && aheadCount > 0 {
 		responseParts = append(responseParts, fmt.Sprintf("Global Synced: Pulled %s | Pushed %s", pulledDiff.Summary(), pushedDiff.Summary()))
 		responseParts = append(responseParts, "\n📥 Pulled from Remote:")
 		responseParts = append(responseParts, pulledDiff.DetailedLogLines()...)
 		responseParts = append(responseParts, "\n📤 Pushed to Global Dictionary:")
 		responseParts = append(responseParts, pushedDiff.DetailedLogLines()...)
-	} else if pushedDiff.TotalChanges() > 0 {
+	} else if aheadCount > 0 {
 		responseParts = append(responseParts, fmt.Sprintf("Pushed to Global Dictionary: %s", pushedDiff.Summary()))
 		responseParts = append(responseParts, pushedDiff.DetailedLogLines()...)
 	} else if pulledDiff.TotalChanges() > 0 {

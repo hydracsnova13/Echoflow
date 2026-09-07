@@ -445,7 +445,14 @@ func (d *DAGExecutor) ExecuteCPUCommand(jobID string, compName string, meta brok
 	pythonLogs := strings.TrimSpace(outBuf.String())
 
 	if err != nil {
-		d.MemoryManager.LogToUI(fmt.Sprintf("❌ [%s] %s crashed! Error: %v | Logs: %s", jobID, compName, err, pythonLogs))
+		tip := ""
+		logLower := strings.ToLower(pythonLogs)
+		if strings.Contains(logLower, "mkl_malloc") || strings.Contains(logLower, "memoryerror") || strings.Contains(logLower, "bad_alloc") {
+			tip = " | 💡 Tip: System ran out of RAM. Please expand Windows Pagefile (Virtual Memory) to 16GB+ or switch to Fast quality mode in settings."
+		} else if strings.Contains(logLower, "permission denied") || strings.Contains(logLower, "user-mapped section") {
+			tip = " | 💡 Tip: File is locked by another process or media player. Please close applications holding the file."
+		}
+		d.MemoryManager.LogToUI(fmt.Sprintf("❌ [%s] %s crashed! Error: %v | Logs: %s%s", jobID, compName, err, pythonLogs, tip))
 		job.UpdateGlobalTask(compName, broker.StateError)
 		return
 	}
