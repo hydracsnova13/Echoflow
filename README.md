@@ -286,8 +286,9 @@ Ensure the following runtimes and compilers are installed before running the env
 |---|---|---|---|
 | **Go** | `1.20+` (1.25 recommended) | `go version` | Compiles the native DAG engine, memory broker, and IPC supervisor |
 | **Node.js** | `18.x` or `20.x LTS` | `node -v` | Packages frontend HTML5, CSS, and Vanilla JS UI assets |
-| **Python 3.12** | `3.12.x 64-bit` | `py -3.12 --version` | Powers `env_core` (Faster-Whisper, IndicTrans2, SciPy acoustic DSP) |
-| **Python 3.10** | `3.10.x 64-bit` | `py -3.10 --version` | Powers `env_tts` (Pyannote 3.1 diarization, OpenVoice V2, MMS TTS) |
+| **Python 3.12 (64-bit)** | `3.12.x 64-bit` | `py -3.12 --version` | Powers `env_core` (Faster-Whisper, IndicTrans2, SciPy acoustic DSP) — *Must be 64-bit (x86_64)* |
+| **Python 3.10 (64-bit)** | `3.10.x 64-bit` | `py -3.10 --version` | Powers `env_tts` (Pyannote 3.1 diarization, OpenVoice V2, MMS TTS) — *Must be 64-bit (x86_64)* |
+| **MSVC Build Tools** | `14.0+ (VS 2019/2022)` | `cl.exe` (via Developer Prompt) | Required if building wheels from source (C/C++ extensions) |
 | **Wails CLI** | `v2.9.x+` | `wails version` | Desktop application packager and IPC binding generator |
 | **Git** | `2.30+` | `git --version` | Manages project repositories and synchronizes domain dictionaries |
 | **Hugging Face Token** | Read Permission | Exported via `HF_TOKEN` | Required for authenticated download of gated Pyannote weights |
@@ -790,6 +791,37 @@ Defines component DAG nodes, dependencies, and environment mappings:
 ## 🔍 Troubleshooting & Diagnostics Guide
 
 Review the diagnostic matrix below for immediate troubleshooting of common system, hardware, or network events:
+
+<details>
+<summary><strong>❌ "Failed to build wheel for env_tts" / CalledProcessError at subprocess.check_call([pip_tts, 'install', '-r', req_tts_file])</strong></summary>
+<br/>
+
+- **Symptom**: During automated setup (`setup_script.py`), package installation inside `env_tts` halts with:
+  ```text
+  error: subprocess-exited-with-error
+  Building wheel for ... (setup.py) ... error
+  subprocess.CalledProcessError: Command '['...\\pip.exe', 'install', '-r', '...\\req_tts.txt']' returned non-zero exit status 1.
+  ```
+- **Root Causes**:
+  1. **Legacy Package Wheel Build**: The legacy Coqui `TTS` package was previously queued for installation. Coqui TTS distributes only raw C++ source archives on PyPI without pre-compiled wheels for newer Python/Windows environments, requiring compilation of native extensions (`monotonic_align`).
+  2. **Missing C++ Compilers**: If Microsoft Visual C++ Build Tools (`cl.exe`, Windows SDK) are not installed on the host OS, source compilation fails immediately.
+  3. **32-Bit Python vs 64-Bit Python**: If Python 3.10 was installed as a 32-bit (x86) binary instead of 64-bit (x86_64), PyPI pre-compiled wheels for PyTorch and transformers are not matched, forcing pip into source fallback mode.
+- **Resolution & Fix**:
+  1. **Update Codebase**: Echoflow does **not** rely on Coqui TTS (it synthesizes speech via Meta MMS TTS and OpenVoice V2). `setup_script.py` has purged `TTS==0.22.0` from `tts_reqs`.
+  2. **Binary Wheel Preference**: `setup_script.py` now enforces `--prefer-binary` on all pip installations to guarantee pip always picks pre-compiled wheels over source packages.
+  3. **Verify 64-bit Python**:
+     ```cmd
+     py -3.10 -c "import platform; print(platform.architecture())"
+     ```
+     Ensure the output is `('64bit', 'WindowsPE')`. If it says `'32bit'`, uninstall Python 3.10 and install the official [Python 3.10 64-bit Windows Installer](https://www.python.org/downloads/release/python-31011/).
+  4. **Install Microsoft C++ Build Tools** (Optional/Recommended for native compiling):
+     Download and run the [Visual Studio Build Tools Installer](https://visualstudio.microsoft.com/visual-cpp-build-tools/) and check the workload **"Desktop development with C++"**.
+  5. **Re-run Setup**:
+     ```cmd
+     python setup_script.py
+     ```
+
+</details>
 
 <details>
 <summary><strong>❌ "Daemon crashed during boot: mkl_malloc: failed to allocate memory"</strong></summary>

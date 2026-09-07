@@ -23,6 +23,24 @@ def get_venv_bin(env_dir, bin_name):
         return bin_exe_path
     return scripts_path if os.name == 'nt' else bin_path
 
+def safe_pip_install(pip_cmd, args, description="Package installation"):
+    cmd = [pip_cmd, "install", "--prefer-binary"] + args
+    try:
+        subprocess.check_call(cmd)
+    except subprocess.CalledProcessError as e:
+        print(f"\n❌ FATAL: Installation step failed during {description} (Exit code: {e.returncode})", flush=True)
+        print(f"   Command executed: {' '.join(cmd)}", flush=True)
+        print("\n💡 Troubleshooting & Resolution Steps:", flush=True)
+        print("   1. Verify 64-bit Python Architecture:", flush=True)
+        print("      Ensure Python 3.10 and 3.12 are 64-bit (x86_64). 32-bit Python cannot install modern PyTorch or ML wheels.", flush=True)
+        print("   2. Install Microsoft C++ Build Tools (if a wheel build was attempted):", flush=True)
+        print("      👉 https://visualstudio.microsoft.com/visual-cpp-build-tools/ (Select 'Desktop development with C++')", flush=True)
+        print("   3. Check Network Connectivity / Proxy:", flush=True)
+        print("      Ensure PyPI (pypi.org) and download.pytorch.org are accessible.", flush=True)
+        print("   4. You can manually re-run the exact command in your terminal to inspect verbose compiler/pip output:\n", flush=True)
+        print(f"      {' '.join(cmd)}\n", flush=True)
+        sys.exit(e.returncode)
+
 def setup_model_garden():
     base_dir = os.path.dirname(os.path.abspath(__file__))
     models_dir = os.path.join(base_dir, "models")
@@ -79,10 +97,18 @@ def setup_model_garden():
 
     if not os.path.exists(env_tts):
         print("   -> Creating 'env_tts' using Python 3.10...")
-        try:
-            subprocess.check_call(["py", "-3.10", "-m", "venv", env_tts])
-        except Exception as e:
-            print(f"❌ Error creating env_tts: {e}")
+        created = False
+        candidates = [["py", "-3.10", "-m", "venv", env_tts], ["python3.10", "-m", "venv", env_tts]]
+        for cmd in candidates:
+            try:
+                subprocess.check_call(cmd)
+                created = True
+                break
+            except Exception:
+                continue
+        if not created:
+            print("❌ Error creating env_tts: Python 3.10 (64-bit) is required for env_tts.")
+            print("   Please install Python 3.10 64-bit: https://www.python.org/downloads/release/python-31011/")
             sys.exit(1)
 
     python_core = get_venv_bin(env_core, "python")
@@ -92,8 +118,11 @@ def setup_model_garden():
 
     print("\n⬆️ Upgrading build tools (pip, setuptools, wheel)...")
     print("PROGRESS:15%", flush=True)
-    subprocess.check_call([python_core, "-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"])
-    subprocess.check_call([python_tts, "-m", "pip", "install", "--upgrade", "pip", "setuptools<70", "wheel"])
+    try:
+        subprocess.check_call([python_core, "-m", "pip", "install", "--upgrade", "--prefer-binary", "pip", "setuptools", "wheel"])
+        subprocess.check_call([python_tts, "-m", "pip", "install", "--upgrade", "--prefer-binary", "pip", "setuptools<70", "wheel"])
+    except Exception as e:
+        print(f"⚠️ Note during build tools upgrade: {e}. Continuing...")
 
     core_reqs = """numpy<2.0.0
 torch>=2.2.0,<2.3.0
@@ -119,8 +148,7 @@ indictranstoolkit>=1.1.1
 huggingface-hub>=0.20.3
 """
     
-    tts_reqs = """TTS==0.22.0
-pyannote.audio==3.1.1
+    tts_reqs = """pyannote.audio==3.1.1
 pysbd==0.3.4
 pydub==0.25.1
 huggingface-hub==0.20.3
@@ -146,20 +174,20 @@ setuptools<70
 
     print("\n⚙️ Installing packages into 'env_core' (Python 3.12)...")
     print("PROGRESS:20%", flush=True)
-    subprocess.check_call([pip_core, "install", "numpy<2.0.0"])
-    subprocess.check_call([pip_core, "install", "-r", req_core_file])
+    safe_pip_install(pip_core, ["numpy<2.0.0"], "env_core: numpy")
+    safe_pip_install(pip_core, ["-r", req_core_file], "env_core: requirements")
 
     print("\n⚙️ Installing strict PyTorch CPU wheels into 'env_tts' (Python 3.10)...")
     print("PROGRESS:35%", flush=True)
-    subprocess.check_call([pip_tts, "install", "torch==2.1.2", "torchvision==0.16.2", "torchaudio==2.1.2", "--index-url", "https://download.pytorch.org/whl/cpu"])
+    safe_pip_install(pip_tts, ["torch==2.1.2", "torchvision==0.16.2", "torchaudio==2.1.2", "--index-url", "https://download.pytorch.org/whl/cpu"], "env_tts: PyTorch CPU")
     
     print("\n⚙️ Installing remaining packages into 'env_tts' (Python 3.10)...")
     print("PROGRESS:45%", flush=True)
-    subprocess.check_call([pip_tts, "install", "-r", req_tts_file])
+    safe_pip_install(pip_tts, ["-r", req_tts_file], "env_tts: requirements")
 
     print("\n⚙️ Force Installing OpenVoice (Bypassing internal conflicts)...")
     print("PROGRESS:55%", flush=True)
-    subprocess.check_call([pip_tts, "install", "--no-deps", "https://github.com/myshell-ai/OpenVoice/archive/refs/heads/main.zip"])
+    safe_pip_install(pip_tts, ["--no-deps", "https://github.com/myshell-ai/OpenVoice/archive/refs/heads/main.zip"], "env_tts: OpenVoice")
 
     print("\n📥 Verifying / Synchronizing Model Weights via HuggingFace Hub...")
 
